@@ -25,10 +25,13 @@ Non-goals (for now): multi-user accounts, cloud sync, mobile app, video coaching
  node(s) ──MQTT─┼──▶│  presence    │    │ voice service │    │ workout engine│    │ storage        │   │
  (BLE + mmWave) │   │  service     │    │ wake word,    │    │ state machine,│    │ SQLite history │   │
                 │   └──────┬───────┘    │ STT, intents, │    │ timers, plans │    └───────▲────────┘   │
- ESP32/Arduino  │          │            │ TTS           │    └──────┬────────┘            │            │
- buttons, LEDs ─┼──MQTT/───┤            └──────┬────────┘           │                     │            │
- (serial/USB)   │  serial  │                   │                    │                     │            │
-                │          ▼                   ▼                    ▼                     │            │
+ ESP32 buttons, │          │            │ TTS           │    └──────┬────────┘            │            │
+ LEDs ──── MQTT─┼──────────┤            └──────┬────────┘           │                     │            │
+                │          │   ┌─────────────┐ │                    │                     │            │
+ Arduino Uno ───┼─ serial ─┼──▶│ serial      │ │                    │                     │            │
+ (USB)          │          │   │ bridge      │ │                    │                     │            │
+                │          │   └──────┬──────┘ │                    │                     │            │
+                │          ▼          ▼        ▼                    ▼                     │            │
                 │   ═══════════════════ MQTT event bus (Mosquitto) ═══════════════════════╧══          │
                 │                                   │                                                  │
                 │                          ┌────────▼────────┐                                         │
@@ -44,7 +47,10 @@ Key ideas:
 * **One Raspberry Pi (ideally a Pi 5, 8 GB) is the hub.** It drives the display
   (HDMI), the microphone and speaker, runs the workout engine and stores history.
 * **Small devices are "dumb" sensors/actuators** that publish events and receive
-  commands over **MQTT** (ESP32 over Wi‑Fi) or serial/USB (Arduino Uno).
+  commands over **MQTT** (ESP32 over Wi‑Fi) or serial/USB (Arduino Uno). A small
+  hub-side **serial bridge** service reads the Arduino's line-based serial
+  protocol and republishes it on MQTT (and vice versa for buzzer/LED commands),
+  so the rest of the system only ever sees MQTT.
 * **Every component talks through an event bus (MQTT).** This keeps services
   independent, lets us add sensors later without touching the engine, and makes
   it easy to test each piece in isolation (and to integrate with Home Assistant
@@ -82,9 +88,17 @@ therefore combine **"someone is in the room"** with **"it is me"**:
 **Proposed logic** (presence service):
 
 1. Motion detected **and** my BLE ID seen with RSSI above threshold within ±30 s → state `ARRIVED(user)`.
-2. Motion detected but no known ID → state `ARRIVED(unknown)` → generic greeting ("Hej! / Hi!"), and voice can still be used.
-3. No motion for N minutes **and** BLE ID gone → `LEFT` → display goes to idle/screensaver, unfinished session is saved.
-4. Debounce: no new greeting within e.g. 30 minutes of the last one.
+   If the BLE ID was already seen before the motion, greet immediately.
+2. Motion detected but no known ID → wake the display at once (welcome screen
+   without name) and wait up to a short grace period (e.g. 5 s) for a BLE
+   sighting. If none arrives → state `ARRIVED(unknown)` → generic spoken greeting
+   ("Hej! / Hi!"); voice can still be used.
+3. Upgrade: if my BLE ID is seen later (within the 30 s window) while in
+   `ARRIVED(unknown)`, switch to `ARRIVED(user)` and update the screen with the
+   personal greeting/last-session summary. The *spoken* greeting is not repeated.
+4. No motion for N minutes **and** BLE ID gone → `LEFT` → display goes to idle/screensaver, unfinished session is saved.
+5. Debounce: no new spoken greeting within e.g. 30 minutes of the last one
+   (the unknown→user upgrade in rule 3 is exempt because it is silent).
 
 **Greeting** = display wakes up (HDMI-CEC or DPMS on), shows a welcome screen
 with time of day, last workout summary, and suggested next workout; TTS says a
@@ -150,6 +164,18 @@ rowing:        { en: Rowing,        da: Roning }
    │                                              PAUSED                                               │
    └────────────── "stop" / plan finished ◀── SUMMARY ◀─────────────── last activity done ◀───────────┘
 ```
+
+Additional transitions (driven by the intents in §6.3):
+
+| From | Intent / event | To |
+|------|----------------|----|
+| ACTIVE, PAUSED, REST | `next` | READY for the next activity (current one logged as `skipped`) |
+| ACTIVE, PAUSED, REST, READY | `previous` | READY for the previous activity (restart it) |
+| ACTIVE, PAUSED, REST, FEEDBACK | `stop` | SUMMARY (session saved as `stopped`) |
+| FEEDBACK | `report_reps`, `feeling`, `done` | REST (if configured) or next activity |
+| FEEDBACK | `adjust` ("let's do the last 2") | ACTIVE with an inserted mini-activity for the remaining reps; afterwards continues to REST/next |
+| FEEDBACK | no answer within e.g. 15 s | log without feedback, continue |
+| ACTIVE (`distance`) | check-in timer | stays ACTIVE, emits `ask_check_in`; answers update the log |
 
 * The engine is **pure logic driven by a clock tick and events** (voice intents,
   button presses, sensor data). It emits events (`activity_started`,
@@ -245,7 +271,7 @@ lives only in the database (it is personal data, not source code).
 | `tc/presence/motion` | ESP32 presence node | `{"motion": true}` |
 | `tc/presence/ble` | ESP32 presence node | `{"id": "my-phone", "rssi": -62}` |
 | `tc/presence/state` | presence service | `{"state": "arrived", "user": "me"}` |
-| `tc/input/button` | ESP32/Arduino bridge | `{"button": "next"}` |
+| `tc/input/button` | ESP32 button node / serial bridge | `{"button": "next"}` |
 | `tc/sensor/rower` | optional sensor | `{"meters": 812, "spm": 24}` |
 | `tc/voice/intent` | voice service | `{"intent": "report_reps", "value": 8, "lang": "da", "text": "otte"}` |
 | `tc/voice/say` | engine / presence | `{"text": "Næste øvelse: armstrækninger", "lang": "da", "priority": "high"}` |
@@ -264,6 +290,7 @@ TrainingCenter/
 │   ├── engine/           workout model + state machine (pure Python, unit tested)
 │   ├── voice/            wake word, STT, intent parser, TTS
 │   ├── presence/         presence fusion logic
+│   ├── serial_bridge/    Arduino serial ⇄ MQTT bridge
 │   ├── api/              FastAPI + WebSocket server
 │   ├── storage/          SQLite access
 │   └── tests/
