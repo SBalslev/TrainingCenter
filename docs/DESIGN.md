@@ -117,10 +117,15 @@ pipeline. The engine therefore treats every input source equally.
  sensor event  ─┘      (hub)        {intent, value, source, node, ts}
 ```
 
-* All inputs land on `tc/input/*` (voice publishes `tc/voice/intent`, which the
-  normaliser treats the same way) and are converted into a **control intent**
-  using exactly the vocabulary of §8.3 (`start_workout`, `pause`, `next`,
-  `done`, `report_reps`, `feeling`, …).
+* The normaliser **subscribes** to `tc/input/button` (physical nodes and the
+  serial bridge), `tc/input/ui` (kiosk and companion taps), `tc/voice/intent`
+  and the goal-relevant sensor topics `tc/sensor/rower`, `tc/sensor/hr`,
+  `tc/sensor/equipment` (§11). It converts each of them into a **control
+  intent** using exactly the vocabulary of §8.3 (`start_workout`, `pause`,
+  `next`, `done`, `report_reps`, `feeling`, …).
+* It **publishes** on `tc/input/intent`, which is its output only – nothing
+  subscribes to `tc/input/*` as a wildcard, so the normaliser never consumes its
+  own messages. The engine subscribes to `tc/input/intent` alone.
 * **The engine does not know where an intent came from.** `source`/`node` are
   carried for logging and debugging only. This keeps the state machine (§7.3)
   testable without any hardware and means a new input device never requires
@@ -564,7 +569,8 @@ need for an online datastore entirely.
 | `tc/presence/ble` | ESP32 presence node | `{"id": "my-phone", "rssi": -62}` |
 | `tc/presence/state` | presence service | `{"state": "arrived", "user": "me"}` |
 | `tc/input/button` | ESP32 button node / serial bridge | `{"node": "panel", "button": "rep", "action": "press", "ts": 1733053200.123}` |
-| `tc/input/intent` | input normaliser | `{"intent": "rep", "value": 1, "source": "button", "node": "panel", "ts": ...}` |
+| `tc/input/ui` | web API (kiosk / companion taps) | `{"node": "phone", "button": "next", "action": "press", "ts": ...}` |
+| `tc/input/intent` | input normaliser (output only) | `{"intent": "rep", "value": 1, "source": "button", "node": "panel", "ts": ...}` |
 | `tc/node/status` | every input/sensor node, periodically (retained) | `{"node": "wall-rower", "online": true, "rssi": -58, "battery": 92}` |
 | `tc/node/status` | broker, on behalf of a node (retained MQTT Last Will) | `{"node": "wall-rower", "online": false}` |
 | `tc/node/feedback` | engine / UI | `{"node": "panel", "led": "pulse_green", "buzz": "click"}` |
@@ -664,7 +670,7 @@ indicator so you always know *why* something is not answering.
 | Failure | Behaviour |
 |---------|-----------|
 | Microphone unavailable / STT failing | Voice indicator turns grey with a reason; buttons and timers continue; no attempt to listen |
-| MQTT broker down | Hub keeps running the session from local state; inputs that depend on the bus are marked offline; broker reconnect is automatic |
+| MQTT broker down | The session keeps running **on timers only**: every input reaches the engine over the bus, so remote nodes, voice and the UI all stop producing intents. The kiosk shows a prominent "inputs offline" banner, `timed`/`rest` activities continue uninterrupted, and `reps` activities hold at their current count rather than being lost. Reconnect is automatic and queued node events are replayed on reconnect. (If this proves too fragile in practice, the fallback is an in-process path for hub-local inputs – voice and kiosk – bypassing the broker.) |
 | Button node offline (LWT received, or keepalive timeout) | Node greyed out in the status strip; other nodes and voice still work. `count_mode` falls back to `voice` **only when no control node remains online** (§5.4) |
 | Sensor offline mid-activity | Fall back to the time/button goal for that activity (§5), log the gap, show the degraded badge |
 | Display asleep or HDMI lost | Audio cues continue uninterrupted; display is re-woken on the next presence or input event |
