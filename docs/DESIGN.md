@@ -621,13 +621,18 @@ separate system. **One codebase, one API, one WebSocket stream, two UI modes.**
 ### 9.1 Kiosk screens
 
 * **Idle / welcome**: clock, greeting, last session summary, current streak,
+  today's suggestion from the program (§7.6), a one-line readiness note (§12.9),
   "press the green button or say *Hey Coach, start* to begin".
+* **Ready screen** (after choosing a plan, before starting): estimated duration,
+  the equipment check (§9.7), and the time-budget option (§7.7).
 * **Workout screen**:
   * Large current activity name + big countdown / rep counter / distance.
     Exactly **one** number is dominant (§12.3); everything else is secondary.
   * Progress ring or bar for the current activity, round counter ("Round 3/5").
   * Side list of all activities in the plan with the current one highlighted and finished ones ticked.
-  * "Up next" preview.
+  * "Up next" preview, with a looping demo clip of the next exercise (§9.8).
+  * Working weight for `weighted_reps`, large enough to read from the rack
+    (§7.3), and the block score so far for an `amrap`/`for_time` block (§7.4).
   * Live heart rate and zone when an HR sensor is connected (§5.1).
   * Last-session comparison for the same activity ("last time: 18").
   * Small status strip: microphone state, connected input nodes, sensor status,
@@ -644,9 +649,17 @@ Create and edit plans in the browser instead of hand-editing YAML:
   git. The editor reads and writes those files; it is a view over the files, not
   a second source of truth.
 * Plan library with search, duplication and versioning (via git history).
-* Templates for the common shapes: EMOM, AMRAP, Tabata, circuit, intervals.
+* Templates for the common shapes: EMOM, AMRAP, Tabata, circuit, intervals,
+  strength sets – every one of which the model can now actually express
+  (§7.3, §7.4).
+* An **exercise picker** browsing the library (§7.5) by category, muscle group
+  and equipment, with the demo clip as a preview.
 * Validation against the schema (§7.2) with a dry-run preview of the timeline
-  and the total session duration.
+  and the total session duration – the same estimate the time budget uses (§7.7).
+* The same editor edits **programs** (§7.6).
+* **Import / export** of plans and programs as YAML files. Plans are already
+  plain files in git, so sharing one is just sending a file – no account, no
+  service, no sign-up.
 
 ### 9.3 Live remote control
 
@@ -656,16 +669,22 @@ same control intents as a physical node, with `node: phone` (§3.1, §4.1).
 
 ### 9.4 Statistics and completion views
 
-* **Streaks** and a calendar heat-map of sessions.
-* **Per-exercise progression** – reps / weight / pace over time, with personal
-  bests marked.
+* **Streaks** and a calendar heat-map of sessions, using the civil-time rules in
+  §10.8 (and respecting scheduled rest days).
+* **Per-exercise progression** – reps, **weight** (§7.3) and pace over time, with
+  personal bests marked. For strength work this is estimated 1RM and top set;
+  for conditioning it is pace or score.
+* **Block scores** – AMRAP and "for time" results over time, comparing only
+  unmodified blocks (§7.4).
 * **Completion rate per plan** – e.g. "you skip the finisher 60 % of the time"
-  → suggest shortening it. Completion is tracked per activity, so skipped,
-  stopped and adjusted sets are all visible.
+  → suggest shortening it. Computed per activity from the statuses defined in
+  §7.9, so skipped, partial, trimmed and never-reached are all distinguishable.
 * **Session detail** – timeline of the actual session against the plan, HR
   trace, feeling scores, inputs used.
 * **Volume and time totals** by week and month, with simple trend lines. The aim
   is a handful of charts you actually look at, not an analytics suite.
+* Every view also offers **edit/delete** for the underlying session (§10.10),
+  because a statistic you cannot correct is a statistic you stop believing.
 
 ### 9.5 Post-session review
 
@@ -679,6 +698,46 @@ gives far better data quality than asking mid-workout when you are gasping.
 * Optionally write sessions as `.fit` or `.tcx` so they can be uploaded to
   Strava/Garmin if that is ever wanted. Export is a manual, explicit action.
 
+### 9.7 Equipment check
+
+The ready screen lists what the plan needs – "16 kg kettlebell, barbell + rack,
+rower, mat" – collected from the `equipment` and `default_weight` fields of the
+exercise library (§7.5). Finding out mid-session that the plates are still in the
+shed is a small thing that ruins a session.
+
+### 9.8 Exercise demo clips
+
+A short (≈3 s) looping clip per exercise, shown in the "up next" preview and in
+the plan editor's exercise picker. This is a large quality jump for unfamiliar
+movements and is **completely distinct from the camera work ruled out in §5.3**:
+the clips are static files recorded once, stored locally in `assets/exercises/`,
+referenced by `media` in the library, and involve no live camera, no pose
+estimation and no privacy exposure whatsoever. A missing clip is simply not
+shown.
+
+### 9.9 Guest and partner mode
+
+Training with a visitor, or with a partner side by side, must not pollute your
+own statistics – otherwise you will avoid doing it, or the history becomes
+untrustworthy.
+
+* A session can be started **as a guest** from the ready screen. It is logged
+  against a `is_guest` user row (§10.1), kept out of your streaks, progression
+  and personal bests, and can be deleted wholesale afterwards.
+* A **partner session** logs the same plan for two users, so both get their
+  history. Rep counting stays single-source – whoever presses the button – so
+  this is deliberately simple rather than trying to track two people's reps from
+  one panel.
+* No login is required for a guest: the point is a friend visiting, not an
+  account system. Multi-user *accounts* remain a non-goal (§1).
+
+### 9.10 Nudges
+
+Optional web-push notifications from the companion UI: "4 days since your last
+session", or a reminder at your usual training time learned from history. Off by
+default, one tap to disable, and never more than one per day – a nagging system
+gets muted, which is worse than a silent one.
+
 Tech: plain HTML/CSS + a small JS framework (e.g. Svelte or vanilla), live
 updates over WebSocket from the API service. Both modes share components and
 differ mainly in layout and type scale.
@@ -690,23 +749,41 @@ differ mainly in layout and type scale.
 SQLite database on the Pi is the **single source of truth**:
 
 ```
-user(id, name, language, hr_max, created_at)
-session(id, user_id, plan_name, started_at, ended_at, status, notes)
-activity_log(id, session_id, block, round, exercise, type, count_mode,
+user(id, name, language, hr_max, is_guest, created_at)
+session(id, user_id, plan_name, plan_version, program_name, started_at, ended_at,
+        local_date, status, trimmed_from, notes, edited_at)
+block_log(id, session_id, block_name, block_index, goal_type,
+          score_rounds, score_reps, score_seconds, capped, modified,
+          started_at, ended_at)
+activity_log(id, session_id, block_log_id, round, exercise, type, count_mode,
+             status,                                   -- §7.9
              target_reps, actual_reps, target_seconds, actual_seconds,
-             target_meters, actual_meters, feeling,
-             avg_hr, max_hr, started_at, ended_at)
+             target_meters, actual_meters,
+             target_weight_kg, actual_weight_kg,       -- §7.3
+             feeling, avg_hr, max_hr, started_at, ended_at)
 sample(id, session_id, ts, metric, value)      -- HR/pace/cadence time series
-event_log(id, session_id, ts, source, node, kind, payload_json)  -- raw events for debugging
+hrv_reading(id, user_id, taken_at, rmssd, resting_hr, source)   -- §12.9
+event_log(id, session_id, ts, source, node, kind, payload_json)  -- raw events (§17.2)
 ```
 
 **Decision – carry `user_id` from day one.** Multi-user remains a non-goal, but
 `user_id` is the one schema change that is cheap now and painful later (it is
-also exactly what an online datastore or a family member would force). A single
-row in `user` is created at install time and everything references it.
+also exactly what an online datastore, a guest (§9.9) or a family member would
+force). A single row in `user` is created during first-run setup (§16) and
+everything references it.
 
-Plans and the exercise library live as YAML files in this repository; history
-lives only in the database (it is personal data, not source code).
+**Decision – weights are stored in kilograms** as numbers (`_kg` suffix), never
+as a formatted string, so progression arithmetic is trivial (§7.3).
+
+**Decision – `block_log` exists because a score belongs to a block.** AMRAP and
+"for time" results (§7.4) have nowhere else to live, and personal bests compare
+*scores for the same unmodified block*, which is exactly what this table holds.
+
+**Decision – `session.local_date`** is stored alongside the UTC timestamps,
+because streaks and calendars are civil-time questions (§10.8).
+
+Plans, programs and the exercise library live as YAML files in this repository;
+history lives only in the database (it is personal data, not source code).
 
 ### 10.2 Local-first, by decision
 
@@ -741,7 +818,7 @@ If a hosted datastore is ever used, the boundary is decided now:
 
 | Data | Leaves the house? |
 |------|-------------------|
-| `session`, `activity_log` | Yes, if sync is enabled |
+| `session`, `block_log`, `activity_log` | Yes, if sync is enabled |
 | `sample` (HR traces) | Yes, if sync is enabled – this is health data; encrypted at rest and in transit |
 | `event_log` (raw events) | **No** – debugging data, stays local |
 | Audio / recordings / transcripts | **Never** – they do not leave the device, and audio is not persisted at all |
@@ -757,6 +834,78 @@ own web UI is simpler, more private and more capable than replicating data to a
 hosted service. **Recommendation: do this first**; it very likely removes the
 need for an online datastore entirely.
 
+### 10.7 Versioning and migrations
+
+Three things version independently, and all three will change:
+
+| What | How |
+|------|-----|
+| **Database schema** | Numbered, forward-only migration scripts in `hub/storage/migrations`, applied automatically at startup. The current version is stored in the database. A backup (§10.3) is taken automatically before any migration runs. |
+| **Plan / program YAML** | `schema_version` at the top of each file (§7.2). The loader accepts older versions and upgrades them in memory; a `migrate-plans` command rewrites the files in place when it is worth it. An unknown *newer* version is refused with a clear message rather than half-parsed. |
+| **Firmware** | Semantic version reported in `tc/node/status` (§11), so the UI can show which nodes are behind (§15.2). |
+
+The engine must tolerate history written by older versions: a session logged
+before `weighted_reps` existed simply has no weight, and the statistics must
+treat that as "unknown", never as zero.
+
+### 10.8 Calendar semantics (civil time)
+
+Timers use a monotonic clock (§7.8), but streaks, heat-maps and weekly totals are
+**civil-time** questions, and getting them wrong is a classic source of
+"why does it say I broke my streak?":
+
+* Each session stores a **`local_date`** computed in the hub's configured local
+  time zone when the session *starts*. A session starting at 23:50 and ending at
+  00:20 belongs to the day it started.
+* A **"training day"** is a local date on which at least one session reached
+  `completed` or `partial`.
+* A **streak** counts consecutive training days, and a **rest day scheduled by a
+  program (§7.6) does not break it**. An unplanned gap does.
+* **Weeks start on Monday** (Danish/ISO convention).
+* **DST** is handled by storing UTC timestamps plus `local_date`, never by
+  storing a local timestamp alone; a day is not assumed to be 24 h long.
+* If the time zone is ever changed, existing `local_date` values are left as
+  they were recorded. Rewriting history to a new zone would silently alter past
+  streaks.
+
+### 10.9 Retention and SD-card wear
+
+`event_log` records every raw event, which is exactly what makes replay (§17.2)
+possible – and is also a continuous write load on an SD card, which is the most
+likely hardware failure in the whole system.
+
+* **Retention:** full raw events for the last 30 days; after that, only sessions
+  explicitly flagged "keep for debugging" retain their events. Aggregates
+  (`session`, `block_log`, `activity_log`, `sample`) are kept **forever** – they
+  are the actual history and are small.
+* Writes are **batched** and the database uses WAL mode, so a session is not
+  thousands of individual card writes.
+* **Prefer an SSD/USB boot** or an industrial-grade card on the hub. This is a
+  cheap hardware decision that prevents the most boring possible failure.
+* Backups (§10.3) are what make card failure survivable, so backup health is
+  shown in the companion UI (§15.1), not silently assumed.
+
+### 10.10 Correcting history
+
+Button counting will miscount, and a session will eventually be left running
+while you walk away. If the statistics drift from reality you stop trusting them,
+and once you stop trusting them you stop looking – which would kill §9.4
+entirely. So editing history is a feature, not an afterthought:
+
+* The companion UI can **edit** a logged session: reps, weight, feeling, notes,
+  and the status of an individual activity.
+* It can **delete** a session, or mark it **"not a real session"** (a test, a
+  demo to a friend) so it is excluded from statistics and streaks but still
+  visible in the raw log.
+* **Auto-close:** a session with no events for 2 hours is closed automatically
+  with status `abandoned` and excluded from completion rates. It is offered for
+  review next time you open the UI – "did you finish this?".
+* Edits set `session.edited_at` and are recorded in `event_log`, so an edited
+  session is visibly edited. History is correctable, not rewritable without
+  trace.
+* Personal bests (§12.4) are **recomputed** after an edit, so a corrected typo
+  cannot leave a phantom record standing.
+
 ## 11. Event bus topics (MQTT)
 
 | Topic | Publisher | Example payload |
@@ -767,7 +916,7 @@ need for an online datastore entirely.
 | `tc/input/button` | ESP32 button node / serial bridge | `{"node": "panel", "button": "rep", "action": "press", "age_ms": 12}` |
 | `tc/input/ui` | web API (kiosk / companion taps) | `{"node": "phone", "button": "next", "action": "press", "age_ms": 0}` |
 | `tc/input/intent` | input normaliser (output only) | `{"intent": "rep", "value": 1, "source": "button", "node": "panel", "ts": ...}` |
-| `tc/node/status` | every input/sensor node, periodically (retained) | `{"node": "wall-rower", "online": true, "rssi": -58, "battery": 92}` |
+| `tc/node/status` | every input/sensor node, periodically (retained) | `{"node": "wall-rower", "online": true, "rssi": -58, "battery": 92, "fw": "1.3.2"}` |
 | `tc/node/status` | broker, on behalf of a node (retained MQTT Last Will) | `{"node": "wall-rower", "online": false}` |
 | `tc/node/feedback` | engine / UI | `{"node": "panel", "led": "pulse_green", "buzz": "click"}` |
 | `tc/sensor/rower` | optional sensor | `{"meters": 812, "spm": 24}` |
@@ -778,6 +927,8 @@ need for an online datastore entirely.
 | `tc/voice/say` | engine / presence | `{"text": "Næste øvelse: armstrækninger", "lang": "da", "priority": "high"}` |
 | `tc/engine/state` | workout engine | full current state snapshot (retained) |
 | `tc/engine/event` | workout engine | `{"event": "countdown", "seconds_left": 3}` |
+| `tc/room/state` | workout engine (retained) | `{"phase": "work", "seconds_left": 12, "hr_zone": 4}` – consumed by Home Assistant (§12.10) |
+| `tc/node/firmware` | hub | `{"node": "wall-rower", "command": "update", "url": "...", "version": "1.4.0"}` (§15.2) |
 
 `action` is one of `press`, `long` (≥1 s), `hold` (≥3 s) or `double` (§4.2).
 `node` identifies *which* panel sent it (§3.1), so a new button is a new `node`
@@ -860,13 +1011,18 @@ Genuine, not gamified noise:
 * Auto-scale down when the last session for that plan was reported "too hard";
   scale up after repeated "easy".
 * Deload hint after N consecutive hard sessions.
+* Progressive overload now has something to operate on: logged `actual_weight_kg`
+  per set (§7.3), with suggestions rounded to the exercise's `progression_step`
+  so they are achievable with the plates actually in the room.
+* Programs (§7.6) are what make "what should I do today?" answerable at all;
+  without them adaptivity has no horizon beyond the next session.
 
 All suggestions are proposals shown before the session starts – the system never
 silently changes a plan.
 
 ### 12.6 Graceful failure
 
-Every failure mode has a defined behaviour and a visible reason. §7.3 already
+Every failure mode has a defined behaviour and a visible reason. §7.8 already
 persists state for resume; this extends it to a visible **degraded mode**
 indicator so you always know *why* something is not answering.
 
@@ -917,6 +1073,73 @@ in-process path for hub-local inputs – voice and kiosk – bypassing the broke
 * Audio and visual channels are redundant, so the system is usable with the
   sound off or without looking at the screen.
 
+### 12.9 Readiness and recovery
+
+**Decision – this is what `rr` is for.** The HR payload (§11) carries
+beat-to-beat intervals, and until now nothing consumed them. They are kept, and
+their purpose is readiness:
+
+* A **morning or pre-session reading**: stand still for 60 s on the ready screen
+  while the strap is on, and the hub computes **RMSSD** and resting HR from the
+  `rr` stream, storing one row in `hrv_reading` (§10.1).
+* Readiness combines three cheap signals: HRV trend against your own rolling
+  baseline, recent training load (§9.4), and your reported feeling from recent
+  sessions (§12.4).
+* The output is **one sentence on the idle screen** – "you look recovered, good
+  day for intervals" or "take it easy today" – not a score out of 100. A single
+  number invites optimising the number instead of the training.
+* It is **advisory only**. It can bias the suggested session (§12.5) but never
+  blocks or changes a plan you chose.
+* It degrades silently: no strap, too few readings, or less than ~2 weeks of
+  baseline means no line is shown at all rather than a meaningless one.
+* `rr` is noisy from an optical sensor. Artefact filtering is required, and a
+  chest strap is strongly preferred for readings (§5.1).
+
+### 12.10 The room as an output (Home Assistant)
+
+Home Assistant is listed as a presence *input* (§6). The stronger idea is using
+it as an **output**, so the room itself signals state in peripheral vision:
+
+* **Work/rest lighting** – the room lights shift colour with the LED ring: work
+  is bright/white, rest is a calm colour, the last 3 s of rest pulse. You can
+  then run a whole interval session without looking at the screen at all, which
+  matters when you are face-down on a mat.
+* **Automatic fan when HR is high** – fan on above a zone threshold or during
+  long work blocks, off during cool-down. In a garage gym this is one of the
+  cheapest genuinely great wins available.
+* Implementation is one retained topic, `tc/room/state` (§11), which Home
+  Assistant subscribes to. The engine publishes state and knows nothing about
+  lights, fans or any specific automation – and the system is fully functional
+  with Home Assistant absent.
+* Everything here is opt-in. Lights changing unexpectedly in a shared house is
+  an anti-feature.
+
+### 12.11 Coach personality and phrase variation
+
+Hearing the identical sentence every single morning becomes grating within a
+week, and a grating coach gets muted. Each cue therefore draws from a **pool of
+phrasings**, varied by time of day, session type, context (a personal best, a
+long gap since the last session) and simple randomisation without immediate
+repeats. The tone is calm and encouraging, never drill-sergeant – you can change
+your mind about that later because the phrasings are data, not code.
+
+The pre-generated TTS cache (§12.1) is exactly the right mechanism: variants are
+synthesised ahead of time, so variation costs latency nothing. Safety- and
+timing-critical cues ("three, two, one") are deliberately **not** varied –
+predictability matters more there than novelty.
+
+### 12.12 Music
+
+Beyond ducking the volume for cues (§12.2):
+
+* **Auto play/pause aligned to the session** – music during work, quieter or
+  paused during rest and between-block instruction, resumed automatically.
+* **Tempo-matched selection** – a faster playlist for intervals, something
+  calmer for mobility and cool-down.
+* Control is via whatever already plays music in the room (Home Assistant media
+  player, Spotify Connect, Bluetooth). The hub is **not** becoming a music
+  player; it only sends play/pause/volume.
+
 ## 13. Security and privacy
 
 The core loop is LAN-only, but the companion UI (§9) leaves the kiosk, so this
@@ -950,9 +1173,10 @@ TrainingCenter/
 │   ├── sensors/          HR bridge, rower, ambient, equipment integrations
 │   ├── serial_bridge/    Arduino serial ⇄ MQTT bridge
 │   ├── api/              FastAPI + WebSocket server (kiosk + companion)
-│   ├── storage/          SQLite access, migrations
+│   ├── storage/          SQLite access, migrations (§10.7)
 │   ├── sync/             backup + optional outbound sync (§10.3, §10.4)
-│   └── tests/
+│   ├── room/             publishes tc/room/state for Home Assistant (§12.10)
+│   └── tests/            unit tests + recorded event logs for replay (§17)
 ├── ui/
 │   ├── kiosk/            glanceable display UI
 │   ├── companion/        phone/laptop UI: plans, control, statistics
@@ -963,8 +1187,10 @@ TrainingCenter/
 │   ├── esp32-hr/         BLE heart-rate bridge → MQTT
 │   └── arduino-io/       serial I/O bridge
 ├── assets/
-│   └── audio/            pre-rendered TTS cues and earcons (§12.1, §12.2)
-├── plans/                workout plans (YAML) + exercises.yaml
+│   ├── audio/            pre-rendered TTS cues and earcons (§12.1, §12.2)
+│   └── exercises/        short demo clips, one per exercise (§9.8)
+├── plans/                workout plans (YAML), programs/, exercises.yaml
+├── docs/adr/             decision records (§19)
 └── deploy/               systemd units, docker-compose, kiosk setup scripts
 ```
 
@@ -972,7 +1198,159 @@ Language choice: **Python** for the hub (best ecosystem for Whisper/Piper/
 openWakeWord on a Pi), **Arduino/C++ (PlatformIO)** or ESPHome for the ESP32s,
 **HTML/JS** for the UI. Services run as systemd units (or docker-compose).
 
-## 15. Roadmap (incremental, each step usable on its own)
+## 15. Operations
+
+A system that runs in a garage and is maintained by one person fails in
+predictable ways. These sections are not features – they decide whether the
+project survives contact with daily use.
+
+### 15.1 Observability
+
+Raw events are stored (§10.1), but stored data is not observability. What is
+needed is the ability to answer "why did it just do that?" without a debugger:
+
+* A **system health page** in the companion UI: every node with its last-seen
+  time, RSSI, battery and firmware version (§11); broker connection; microphone
+  and STT status; disk space; last successful backup (§10.3); database schema
+  version.
+* A **decision trace** on the session detail view: for each engine transition,
+  which intent caused it, from which source and node. This is the single most
+  useful debugging artefact and it falls out of `event_log` for free.
+* **Voice recognition accuracy tracking.** Every recognition stores the parsed
+  intent, the confidence and whether it was undone or corrected within a few
+  seconds. A "misrecognitions" view then shows which phrases fail, which is the
+  only way the intent grammar (§8.3) actually improves. Only the parsed text is
+  kept, never audio (§13), and the view can be cleared at any time.
+* **Structured logs** with a session id, plus a visible banner for any degraded
+  mode (§12.6). The failure must be visible in the room, not only in a log file.
+
+### 15.2 Firmware provisioning and OTA
+
+The design implies 3–5 ESP32 nodes (§3). Without this, every firmware change
+means walking round the room with a USB cable, which in practice means firmware
+stops being changed.
+
+* **One build, many nodes**: node identity (`node` id, role) comes from
+  provisioned configuration, not from a separate firmware image per node.
+* **Wi-Fi provisioning** on first boot via a temporary soft-AP captive portal;
+  credentials are stored in NVS and never committed (§13).
+* **OTA updates** over the LAN, triggered from the hub via `tc/node/firmware`
+  (§11), with a signed image, A/B partitions and automatic rollback if the new
+  image fails to connect. A node bricked on a shelf is recoverable; a node
+  bricked behind a wall panel is not.
+* Each node reports its **firmware version** in `tc/node/status`, so the health
+  page can show what is out of date.
+* Updates are **never applied during a session**.
+
+### 15.3 Resource budget
+
+The hub runs Whisper, Piper, the broker, the API, the UI and the database at the
+same time, on a Pi, in a garage:
+
+* Measure before assuming: wake word is continuous, STT is bursty, TTS is mostly
+  cache hits (§12.1). If the budget does not fit, the first lever is a smaller
+  Whisper model, then moving STT to another machine (§16, open question 1).
+* **Thermal throttling** is a real risk in a hot or cold garage; the hub needs a
+  heatsink or fan, and the health page shows CPU temperature.
+* The engine's timing must not depend on STT load – timers run in their own loop
+  so a slow transcription can never stretch an interval.
+* Storage wear and retention are covered in §10.9.
+
+## 16. First-run setup
+
+Everything above assumes a configured system. Getting there must be a described
+path, not folklore:
+
+1. **Hub install** – flash the image, run the installer, services start.
+2. **Create the user** – name, language, units; this writes the single `user`
+   row (§10.1).
+3. **Provision each node** – soft-AP, Wi-Fi credentials, node id and role
+   (§15.2), confirmed by the node appearing on the health page.
+4. **Pair the heart-rate strap** – scan, select, confirm a live BPM reading.
+5. **Calibrate `hr_max`** – age formula as a starting point, with an explicit
+   option to enter a measured value; zones derive from it (§11).
+6. **Pick a starter plan or program** – the system ships with a few, so the
+   first session is possible without using the plan editor at all.
+7. **Optional integrations** – Home Assistant (§12.10), backups (§10.3), remote
+   access (§10.6).
+
+Every step is skippable and resumable, and the system is usable after step 2
+with a keyboard alone.
+
+## 17. Testing strategy
+
+"Easy to unit-test without hardware" (§7.8) is a property, not a strategy. For a
+system this event-driven, the strategy has three parts.
+
+### 17.1 Unit tests and a hardware-free mode
+
+The engine is pure logic over an injected clock, so every goal type, transition
+and edge case is testable with no hardware and no real time passing. Beyond
+that, the whole system must run on a laptop: **fake nodes** publish button,
+sensor and HR messages to a local broker, and a **simulated session** can be
+driven end to end. Development that requires standing in the garage is
+development that does not happen.
+
+### 17.2 Session replay
+
+`event_log` already records every raw event with its timing (§10.1). Feeding a
+recorded log back through the engine and asserting the outcome gives three
+things from one mechanism:
+
+* **Regression tests** – real sessions become test fixtures, so a change that
+  would have miscounted last Tuesday's workout fails in CI.
+* **Bug reproduction** – "it skipped an exercise" becomes a reproducible case
+  attached to the report, rather than a story.
+* **Debugging** – stepping through what the engine saw is how §15.1's decision
+  trace is verified.
+
+Replay requires the engine to be deterministic given an event sequence and a
+clock: no hidden wall-clock reads, no unordered concurrency in the decision
+path. That constraint is worth accepting.
+
+### 17.3 What else gets tested
+
+| Area | Approach |
+|------|----------|
+| Plan/program YAML | Schema validation in CI, so a malformed plan is caught before it is ever loaded (§7.2) |
+| Migrations | Applied to a copy of a real database, forwards only, with a restore test (§10.7) |
+| Voice intents | A fixture set of Danish and English phrases parsed to expected intents, no audio required (§8.3) |
+| UI | Smoke tests on the kiosk screens at the real display resolution; glanceability is checked by eye, not by test (§12.3) |
+| Firmware | Button debounce, press/long/hold discrimination (§4.2) and reconnect behaviour on a bench node before deployment |
+
+## 18. Explicit non-goals
+
+Writing down what is *out*, and why, is what stops it creeping back in:
+
+| Not building | Why |
+|--------------|-----|
+| Camera / pose estimation / form correction | Hard, unreliable, and a camera in a home gym is a privacy cost that outweighs the benefit (§5.3). Demo clips (§9.8) cover the real need |
+| A native mobile app | The companion web UI (§9) does everything a native app would, with no app store, no signing, no release process |
+| Social features, leaderboards, sharing | This is a private home gym. Comparison with others is a different product, and a worse one for this purpose |
+| Nutrition and weight tracking | A large separate domain with its own data model; existing apps do it well |
+| A multi-tenant cloud service | Local-first is a decision (§10.2), not a limitation. Hosting other people's health data changes the project entirely |
+| Multi-user accounts | Guest/partner mode (§9.9) covers the real case without an account system |
+| Being a music player | Control an existing player, do not become one (§12.12) |
+
+If one of these ever becomes genuinely wanted, it should be reopened explicitly
+as a decision (§19) rather than arrived at by accretion.
+
+## 19. Decision log
+
+This document is a draft with open questions (§21). As those are answered, the
+*rationale* needs somewhere to live – otherwise the same debates are re-litigated
+and the open-questions list silently rots.
+
+* Each resolved question becomes a short record in `docs/adr/` – context, the
+  decision, the alternatives considered, the consequences – numbered and dated.
+* Decisions already embedded in this document (local-first, `user_id` from day
+  one, buttons as a first-class input, kg as the only unit, no camera) are
+  migrated there as the first records.
+* When a decision is reversed, the old record is **superseded, not deleted**.
+  The reasoning that turned out to be wrong is the most useful part.
+* An answered open question is removed from §21 and linked to its record.
+
+## 20. Roadmap (incremental, each step usable on its own)
 
 Buttons move **early** – they make the MVP genuinely usable without any voice
 stack at all. Heart rate moves into the mid-game. Web statistics follow once
@@ -997,17 +1375,33 @@ there is history worth looking at.
 7. **Distance activities & check-ins**: `distance` type with timed check-ins;
    rower sensor (hall/reed sensor via Arduino, or reading the rowing monitor
    over Bluetooth if supported).
-8. **Companion UI & statistics**: login, remote control, history, streaks,
-   per-exercise progression, completion rates, post-session review, export.
-9. **Plan editor** in the companion UI, with templates and validation.
-10. **Backup & optional sync**: encrypted nightly backup, then VPN remote access;
+8. **Strength & load**: `weighted_reps`, target/actual weight, the enriched
+   exercise library and the equipment check (§7.3, §7.5, §9.7).
+9. **Block goals**: AMRAP and "for time" with scores and personal bests (§7.4).
+10. **Companion UI & statistics**: login, remote control, history, streaks,
+    per-exercise progression, completion rates, post-session review, history
+    correction (§10.10), export.
+11. **Plan editor** in the companion UI, with templates, the exercise picker,
+    validation and import/export.
+12. **Programs & the time budget**: multi-week schedules, "what should I do
+    today?", and "I have 20 minutes" (§7.6, §7.7).
+13. **Backup & optional sync**: encrypted nightly backup, then VPN remote access;
     outbound sync only if remote access proves insufficient.
-11. **Adaptivity**: progressive-overload suggestions, auto-scaling from feeling
+14. **Adaptivity**: progressive-overload suggestions, auto-scaling from feeling
     scores, deload hints.
-12. Nice-to-haves: extra sensors from Tier 2 (§5.2), music ducking refinements,
-    Home Assistant integration (lights on arrival), satellite button nodes.
+15. **The room as an output**: Home Assistant work/rest lighting and automatic
+    fan control (§12.10).
+16. **Readiness**: HRV from `rr`, one line on the idle screen (§12.9).
+17. Nice-to-haves: extra sensors from Tier 2 (§5.2), demo clips (§9.8), coach
+    phrase variation (§12.11), music automation (§12.12), guest mode (§9.9),
+    nudges (§9.10), satellite button nodes.
 
-## 16. Open questions
+**Running alongside, not after:** migrations and schema versioning (§10.7) from
+the first database; the replay harness (§17.2) as soon as `event_log` exists;
+OTA (§15.2) before the second ESP32 node is mounted; the health page (§15.1) as
+soon as there is more than one node to lose.
+
+## 21. Open questions
 
 1. Which Raspberry Pi model(s) do you have (Pi 3/4/5, RAM)? This decides whether
    Whisper runs on the hub or on another machine.
@@ -1039,3 +1433,16 @@ there is history worth looking at.
 15. **How much motivation layer do you want?** Streaks and PB celebrations, or a
     deliberately plain system?
 16. Is a "sounds only"/silent mode needed (early mornings, late evenings)?
+17. **How is strength trained here** – barbell with plates, dumbbells,
+    kettlebells, machines? This decides the `progression_step` defaults and
+    whether per-side weights need modelling (§7.3).
+18. **Do you want programs, or just a library of plans?** Multi-week scheduling
+    (§7.6) is the biggest single feature here, and only worth it if you would
+    actually follow one.
+19. **Is Home Assistant already running**, and are the gym lights and a fan on
+    it? That decides whether §12.10 is a weekend job or a project.
+20. **Would you use a readiness line** (§12.9), or is it the kind of metric you
+    would start optimising instead of training?
+21. **How much history correction do you expect to need** (§10.10) – is a simple
+    delete enough, or is full editing worth building?
+22. Does anyone else ever train in the room (guest mode, §9.9)?
