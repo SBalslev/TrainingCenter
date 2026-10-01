@@ -114,7 +114,7 @@ pipeline. The engine therefore treats every input source equally.
  button press  ─┐
  voice intent  ─┤
  web UI tap    ─┼──▶ normalise ──▶ control intent ──▶ workout engine
- sensor event  ─┘      (hub)        {intent, value, source, node, ts}
+ sensor event  ─┘      (hub)        {intent, value, source, node, ts}   ts = hub time
 ```
 
 * The normaliser **subscribes** to `tc/input/button` (physical nodes and the
@@ -575,8 +575,8 @@ need for an online datastore entirely.
 | `tc/presence/motion` | ESP32 presence node | `{"motion": true}` |
 | `tc/presence/ble` | ESP32 presence node | `{"id": "my-phone", "rssi": -62}` |
 | `tc/presence/state` | presence service | `{"state": "arrived", "user": "me"}` |
-| `tc/input/button` | ESP32 button node / serial bridge | `{"node": "panel", "button": "rep", "action": "press", "ts": 1733053200.123}` |
-| `tc/input/ui` | web API (kiosk / companion taps) | `{"node": "phone", "button": "next", "action": "press", "ts": ...}` |
+| `tc/input/button` | ESP32 button node / serial bridge | `{"node": "panel", "button": "rep", "action": "press", "age_ms": 12}` |
+| `tc/input/ui` | web API (kiosk / companion taps) | `{"node": "phone", "button": "next", "action": "press", "age_ms": 0}` |
 | `tc/input/intent` | input normaliser (output only) | `{"intent": "rep", "value": 1, "source": "button", "node": "panel", "ts": ...}` |
 | `tc/node/status` | every input/sensor node, periodically (retained) | `{"node": "wall-rower", "online": true, "rssi": -58, "battery": 92}` |
 | `tc/node/status` | broker, on behalf of a node (retained MQTT Last Will) | `{"node": "wall-rower", "online": false}` |
@@ -592,8 +592,13 @@ need for an online datastore entirely.
 
 `action` is one of `press`, `long` (≥1 s), `hold` (≥3 s) or `double` (§4.2).
 `node` identifies *which* panel sent it (§3.1), so a new button is a new `node`
-id and nothing else. `ts` is **hub** time, derived from the relative age the node
-reports with each event (§12.6) – node wall clocks are not trusted.
+id and nothing else.
+
+Node-published messages carry **`age_ms`** – how long ago the press happened,
+measured by the node – and **never a wall-clock timestamp**: an ESP32 has no
+trustworthy clock (§12.6). The hub converts `age_ms` into its own monotonic time
+on arrival, and only hub-produced messages such as `tc/input/intent` carry an
+absolute `ts`.
 
 Node liveness uses two retained messages on the same topic: the node itself
 publishes a periodic status (`online: true`, plus signal strength and battery),
@@ -696,8 +701,8 @@ wrong exercise. An event is dropped when it is older than a short max age
 Node timestamps cannot be trusted for this: an ESP32 has no reliable wall clock,
 while the hub times activities on its own monotonic clock (§7.3). Nodes therefore
 send a **relative age** (milliseconds since the press) alongside the event, and
-the hub converts it to hub time on arrival. The `ts` field in §11 is the
-hub-assigned time; the node-supplied age is what the node actually measures.
+the hub converts it to hub time on arrival. Node messages therefore carry `age_ms`, never a
+timestamp; the `ts` on `tc/input/intent` is hub-assigned (§11).
 
 If timer-only operation proves too fragile in practice, the fallback is an
 in-process path for hub-local inputs – voice and kiosk – bypassing the broker.
