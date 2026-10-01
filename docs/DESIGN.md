@@ -265,8 +265,11 @@ short greeting in the preferred language, e.g.
 
 ### 7.1 Concepts
 
+* **Program** – an optional multi-week schedule of plans (§7.6). A plan can be
+  run on its own; a program just says *which* plan on *which* day.
 * **Plan** – a named workout ("Morning EMOM", "Row + core"), made of blocks.
-* **Block** – a group of activities repeated N rounds (e.g. "3 rounds of: …").
+* **Block** – a group of activities repeated N rounds (e.g. "3 rounds of: …"),
+  optionally with its own **block goal** (§7.4).
 * **Activity** – one exercise with a **goal type**:
 
 | Type | Example | Completion | System behaviour |
@@ -274,12 +277,14 @@ short greeting in the preferred language, e.g.
 | `timed` | 1 min burpees | Timer ends | Count down, voice cues at "halfway", "10 seconds", "3‑2‑1", announce next. Covers EMOM / 1‑minute interval sessions. |
 | `reps` | 10 push-ups | Target reps counted (button/sensor), or I say "done"/"færdig" | Shows target reps and a live counter, waits (no time limit), optional rest timer afterwards. With `count_mode: manual_button` the count is already known, so the "how many did you do?" question is skipped entirely (§4.2). |
 | `reps_in_time` | 10 reps within 1 min | Done **or** timer ends | When finished, asks "How did it go? / Hvordan gik det?" → answers like "all of them", "eight", "too hard", "let's do the last 2" → engine adapts (logs actual reps, optionally adds a mini-set for the remaining reps). |
+| `weighted_reps` | 8 back squats at 60 kg | Target reps counted, or "done" | As `reps`, but carries a **load** (§7.3). Shows the target weight prominently, asks or accepts a corrected weight afterwards, and is the type that feeds progressive overload (§12.5). |
 | `distance` | 1600 m rowing | I say "done", or a sensor reports distance | Periodic check-ins (e.g. every 2 min or every 400 m if distance is known): "How is it going? / Hvordan går det?" → answers like "fine", "halfway", "800 meters", "pause". |
 | `rest` | 30 s rest | Timer ends | Shows what is next so I can get ready. |
 
 ### 7.2 Plan file format (YAML, stored in git)
 
 ```yaml
+schema_version: 1       # see §10.7 – bumped whenever the plan schema changes
 name: Morning EMOM
 language: da            # default language for spoken cues (da | en)
 count_mode: manual_button   # plan-wide default, overridable per activity (§5.4)
@@ -289,6 +294,11 @@ blocks:
     activities:
       - { type: timed, exercise: jumping_jacks, duration: 60s }
       - { type: timed, exercise: air_squats, duration: 60s }
+  - name: Strength
+    rounds: 3
+    activities:
+      - { type: weighted_reps, exercise: back_squat, reps: 8, weight: 60kg }
+      - { type: rest, duration: 120s }
   - name: EMOM
     rounds: 5
     activities:
@@ -298,16 +308,27 @@ blocks:
       - { type: rest, duration: 30s, until_hr_below: 130, max_duration: 90s }
   - name: Finisher
     rounds: 1
+    goal: { type: amrap, time_cap: 8min }     # block-level goal, §7.4
+    activities:
+      - { type: reps, exercise: kettlebell_swings, reps: 15, weight: 16kg }
+      - { type: reps, exercise: push_ups, reps: 10 }
+  - name: Cool-down
+    rounds: 1
+    optional: true          # trimmed first by the time budget, §7.7
     activities:
       - { type: distance, exercise: rowing, distance: 1600m, check_in_every: 2min,
-          count_mode: sensor, hr_zone: 3 }
+          count_mode: sensor, hr_zone: 2 }
 ```
 
 Schema additions beyond the original draft:
 
 | Field | Applies to | Meaning |
 |-------|------------|---------|
+| `schema_version` | plan | Which version of this schema the file targets (§10.7). |
 | `count_mode` | plan, block, activity | How reps/laps are counted: `manual_button`, `sensor`, `voice`, `auto` (§5.4). Innermost wins. This is a *preference*: if the hardware it needs is offline, the engine degrades it at runtime (§5.4, §12.6) rather than failing. |
+| `weight` | `weighted_reps`, and any `reps`/`reps_in_time` activity using a loaded implement | Target load (§7.3). |
+| `goal` | block | Block-level goal – `amrap` or `for_time` (§7.4). Without it, a block is simply its rounds. |
+| `optional` | block, activity | May be trimmed to fit a time budget (§7.7) without counting as skipped. |
 | `until_hr_below` | `rest` | End the rest when heart rate drops below this value – requires a Tier‑1 HR sensor (§5.1). |
 | `max_duration` | `rest` | Safety cap for `until_hr_below`, and the fallback when no HR sensor is available. |
 | `hr_zone` | any work activity | Target zone shown on screen; out-of-zone is a hint, never a blocker. |
@@ -316,18 +337,156 @@ Schema additions beyond the original draft:
 the engine falls back to the plain time/rep/button behaviour and shows a degraded
 indicator (§12.6). A plan never becomes unrunnable because a sensor is absent.
 
-An **exercise library** (`exercises.yaml`) holds names in both languages and
-optional cues, so the voice can say "Armstrækninger" or "Push-ups":
+### 7.3 Load (strength training)
+
+Without a load concept the system cannot express "3×8 at 60 kg", which means the
+per-exercise progression in §9.4 and the progressive-overload suggestions in
+§12.5 would have nothing to work on. So:
+
+* **Unit: kilograms**, always, stored as a number. There is no pounds mode; a
+  display preference can be added later without touching the data.
+* `weight` on an activity is the **target**. What actually happened is logged
+  separately (`target_weight` / `actual_weight`, §10.1), because changing the
+  weight mid-session is normal and must not silently rewrite the plan.
+* **Where the target comes from**, innermost first: the activity's `weight`, then
+  the last logged `actual_weight` for that exercise, then `default_weight` from
+  the exercise library (§7.5). This means a plan can say "back squat 3×8" with no
+  number at all and still show you a sensible target.
+* **Bodyweight exercises carry no weight.** For exercises marked
+  `bodyweight: true` the field is absent, not zero. Added load (weighted vest,
+  dip belt) is expressed as `weight` on an otherwise bodyweight exercise.
+* **Changing the load is an intent**, not an edit: "sixty-five" or the Hard/Easy
+  buttons adjust the working weight for the remaining rounds of the block and log
+  the change.
+* **Progression** uses `progression_step` from the exercise library (§7.5) – e.g.
+  +2.5 kg for a squat, +1 kg for a press – so suggestions land on plates that
+  actually exist.
+
+### 7.4 Block goals: AMRAP and "for time"
+
+Some very common workout shapes are goals of a *block*, not of an activity, and
+cannot be expressed by rounds alone:
+
+| Block goal | Means | Completion | Score |
+|------------|-------|------------|-------|
+| `amrap` | "As many rounds as possible in 12 minutes" – the activity list repeats until the time cap | Time cap reached | Rounds completed **plus** reps into the partial round, e.g. `7 + 12` |
+| `for_time` | "3 rounds of … as fast as you can" – fixed work, variable time | All rounds done, or the optional `time_cap` is hit | Elapsed time, e.g. `9:41`; `time_cap` reached without finishing is logged as capped, with the work completed |
+
+Both need a **score**, which is a property of a block, not of an activity – so
+`block_log` exists for exactly this (§10.1). A score is the thing you compare
+between sessions, so it is what personal bests (§12.4) are computed from: "same
+block, better score".
+
+Rules:
+
+* Scores are only comparable when the block is **unmodified** – same activities,
+  same reps, same loads, same cap. A trimmed or adjusted block is logged with
+  `modified: true` and excluded from PB comparison, so an easier version never
+  sets a record.
+* In an `amrap` block the engine does not announce "next round" as an
+  achievement; it tracks the round counter quietly and calls out the time
+  remaining instead.
+* `for_time` suppresses the per-activity rest prompts – the clock is running.
+
+### 7.5 Exercise library
+
+`exercises.yaml` is relied on by the voice (names), the plan editor (a browsable
+library), the statistics (grouping), the equipment check (§9.7), the load
+defaults (§7.3) and the demo clips (§9.8). It therefore holds more than names:
 
 ```yaml
-push_ups:      { en: Push-ups,      da: Armstrækninger }
-burpees:       { en: Burpees,       da: Burpees }
-air_squats:    { en: Air squats,    da: Squats }
-jumping_jacks: { en: Jumping jacks, da: Sprællemænd }
-rowing:        { en: Rowing,        da: Roning }
+back_squat:
+  en: Back squat
+  da: Squat med vægtstang
+  category: strength          # strength | conditioning | mobility | core
+  muscles: [quads, glutes]
+  equipment: [barbell, rack]
+  default_weight: 60kg
+  progression_step: 2.5kg
+  media: back_squat.webm      # 3 s looping clip, §9.8
+  cues:
+    en: "Chest up, knees out"
+    da: "Brystet op, knæene ud"
+
+push_ups:
+  en: Push-ups
+  da: Armstrækninger
+  category: strength
+  muscles: [chest, triceps]
+  equipment: []
+  bodyweight: true
+  media: push_ups.webm
+
+kettlebell_swings:
+  en: Kettlebell swings
+  da: Kettlebell sving
+  category: conditioning
+  equipment: [kettlebell]
+  default_weight: 16kg
+  progression_step: 4kg       # kettlebells come in fixed sizes
+
+rowing:
+  en: Rowing
+  da: Roning
+  category: conditioning
+  equipment: [rower]
 ```
 
-### 7.3 Engine state machine
+Every field except the two names is optional, so the library can start small and
+grow. A missing `media` simply means no clip is shown; a missing `equipment`
+means the exercise never appears in the equipment check.
+
+### 7.6 Programs: what should I do today?
+
+A plan is one workout. A **program** is an optional schedule of plans over weeks,
+and it is what turns the system from a very good interval timer into something
+that feels like a coach – §12.5's adaptivity assumes it exists.
+
+```yaml
+schema_version: 1
+name: Winter base
+weeks: 4
+days:
+  mon: { plan: strength_a }
+  tue: { plan: morning_emom }
+  wed: { rest: true }
+  thu: { plan: strength_b }
+  fri: { plan: row_intervals }
+  sat: { plan: long_row, optional: true }
+  sun: { rest: true }
+```
+
+* **Programs are suggestions, never obligations.** The idle screen shows "today:
+  Strength A" with a one-press start, and any other plan is always one tap away.
+* **Rest days are first-class** – they keep a streak alive (§10.8) rather than
+  breaking it, and the display says so instead of staying blank.
+* **Falling behind is normal.** The program tracks which sessions were done
+  rather than demanding a particular date; missing Tuesday does not shift
+  everything or produce a guilt-trip screen.
+* A program can specify a **progression rule** per plan (e.g. "+2.5 kg on the
+  squat each week"), which is applied to the target weights (§7.3) when the plan
+  is started from the program.
+* Programs are YAML in the repository, like plans, and editable in the companion
+  UI (§9.2).
+
+### 7.7 Time budget: "I have 20 minutes"
+
+The most common reason a session does not happen is not motivation – it is not
+having the planned 45 minutes. The plan editor already computes an estimated
+duration (§9.2), so the engine can use it the other way round:
+
+* Say "I have twenty minutes" (or pick a budget in the UI) and the engine
+  proposes a **trimmed version** of the plan that fits.
+* Trimming order: drop blocks and activities marked `optional` first (cool-down,
+  accessory work), then reduce `rounds` in conditioning blocks, then shorten
+  rests – **never** silently reduce the load or the reps of a strength set,
+  because that corrupts the progression history.
+* The proposal is **shown before starting**, never applied silently, and the
+  session is logged as `trimmed` with the original plan recorded, so statistics
+  can tell a short session from a skipped one.
+* The inverse is also useful: "I have an hour" can offer the optional blocks back.
+
+### 7.8 Engine state machine
 
 ```
  IDLE ──start(plan)──▶ READY ──"start"/countdown──▶ ACTIVE ──goal reached──▶ FEEDBACK? ──▶ REST? ──▶ next activity
@@ -348,7 +507,11 @@ Additional transitions (driven by the intents in §8.3):
 | FEEDBACK | `adjust` ("let's do the last 2") | ACTIVE with an inserted mini-activity for the remaining reps; afterwards continues to REST/next |
 | FEEDBACK | no answer within e.g. 15 s | log without feedback, continue |
 | ACTIVE (`distance`) | check-in timer | stays ACTIVE, emits `ask_check_in`; answers update the log |
-| ACTIVE (`reps`, `reps_in_time`) | `rep` (button press or sensor pulse) | stays ACTIVE, increments the counter; completes the activity when the target is reached |
+| ACTIVE (`reps`, `reps_in_time`, `weighted_reps`) | `rep` (button press or sensor pulse) | stays ACTIVE, increments the counter; completes the activity when the target is reached |
+| ACTIVE (`weighted_reps`) | `set_weight` ("sixty-five", Hard/Easy) | stays ACTIVE; updates the working weight for the remaining rounds of the block and logs it (§7.3) |
+| ACTIVE (block goal `amrap`) | last activity of a round done | back to the first activity of the block, round counter +1, until the time cap (§7.4) |
+| ACTIVE (block goal `amrap`) | time cap reached | block complete; score = rounds + partial reps |
+| ACTIVE (block goal `for_time`) | all rounds done, or `time_cap` reached | block complete; score = elapsed time, flagged capped if the cap was hit |
 | ACTIVE | `undo_rep` (long press) | stays ACTIVE, decrements the counter (never below 0) |
 | FEEDBACK, REST (within a 5 s grace window after the target was reached) | `undo_rep` | back to ACTIVE with the counter decremented, so a miscounted final press can be corrected |
 | REST (`until_hr_below`) | HR below threshold, or `max_duration` reached | next activity |
@@ -356,9 +519,35 @@ Additional transitions (driven by the intents in §8.3):
 * The engine is **pure logic driven by a clock tick and events** (voice intents,
   button presses, sensor data). It emits events (`activity_started`,
   `countdown`, `ask_feedback`, `session_finished`, …) which the UI and voice
-  service render. This makes it easy to unit-test without hardware.
-* All timers use a monotonic clock on the hub (not on the ESP32s).
+  service render. This makes it testable without any hardware (§17).
+* All timers use a monotonic clock on the hub (not on the ESP32s). Anything
+  *calendar*-related – streaks, weekly totals – uses civil time instead, with its
+  own rules (§10.8).
 * Every state change is persisted so a crash/reboot can resume the session.
+
+### 7.9 What counts as "completed"
+
+§9.4 promises a completion rate per plan, which is meaningless without a
+definition. Every activity is logged with a **status**, and the status is
+derived, not guessed:
+
+| Status | Meaning |
+|--------|---------|
+| `completed` | The goal was reached: the timer ran out, or ≥ 100 % of the target reps/distance were recorded |
+| `partial` | Started, and ≥ 50 % of the target recorded, but the goal was not reached (e.g. 6 of 10 reps before `next`) |
+| `skipped` | Started but < 50 % recorded, or skipped outright with `next` |
+| `not_reached` | The session ended before this activity was reached at all – **not** the same as skipping it |
+| `trimmed` | Removed up front by the time budget (§7.7) – excluded from completion statistics entirely |
+
+* A **session** is `completed` when every non-optional activity is `completed` or
+  `partial`, `stopped` when it was ended early, and `abandoned` when it was never
+  closed and got auto-closed (§10.8).
+* **Completion rate per plan** (§9.4) = non-trimmed activities that are
+  `completed` ÷ activities reached, per activity, across sessions of that plan.
+  Counting it per *activity* is what surfaces "you skip the finisher 60 % of the
+  time"; a session-level rate would hide it.
+* `not_reached` is excluded from the rate, otherwise stopping early would make
+  every later activity look deliberately skipped.
 
 ## 8. Voice (G4) – Danish and English
 
