@@ -345,11 +345,16 @@ per-exercise progression in §9.4 and the progressive-overload suggestions in
 
 * **Unit: kilograms**, always, stored as a number. There is no pounds mode; a
   display preference can be added later without touching the data.
+* **The YAML literal is `<number>kg`** – `60kg`, `2.5kg`, `16kg`. The loader
+  parses it to a float in kilograms, which is what the database stores
+  (`target_weight_kg` / `actual_weight_kg`, §10.1). Durations already use the
+  same style (`90s`, `8min`), so this is one rule, not a new one. A bare number
+  is also accepted and means kilograms; any other unit is a validation error.
 * `weight` on an activity is the **target**. What actually happened is logged
-  separately (`target_weight` / `actual_weight`, §10.1), because changing the
+  separately (`target_weight_kg` / `actual_weight_kg`, §10.1), because changing the
   weight mid-session is normal and must not silently rewrite the plan.
 * **Where the target comes from**, innermost first: the activity's `weight`, then
-  the last logged `actual_weight` for that exercise, then `default_weight` from
+  the last logged `actual_weight_kg` for that exercise, then `default_weight` from
   the exercise library (§7.5). This means a plan can say "back squat 3×8" with no
   number at all and still show you a sensible target.
 * **Bodyweight exercises carry no weight.** For exercises marked
@@ -539,9 +544,14 @@ derived, not guessed:
 | `not_reached` | The session ended before this activity was reached at all – **not** the same as skipping it |
 | `trimmed` | Removed up front by the time budget (§7.7) – excluded from completion statistics entirely |
 
+The 50 % boundary between `partial` and `skipped` is a **configurable setting**,
+not a constant: it is the point at which "I did some of it" stops being a fair
+description. It is set once, globally, and changing it recomputes the derived
+statistics rather than rewriting the logged counts, which are the facts.
+
 * A **session** is `completed` when every non-optional activity is `completed` or
   `partial`, `stopped` when it was ended early, and `abandoned` when it was never
-  closed and got auto-closed (§10.8).
+  closed and got auto-closed (§10.10).
 * **Completion rate per plan** (§9.4) = non-trimmed activities that are
   `completed` ÷ activities reached, per activity, across sessions of that plan.
   Counting it per *activity* is what surfaces "you skip the finisher 60 % of the
@@ -775,7 +785,12 @@ everything references it.
 **Decision – weights are stored in kilograms** as numbers (`_kg` suffix), never
 as a formatted string, so progression arithmetic is trivial (§7.3).
 
-**Decision – `block_log` exists because a score belongs to a block.** AMRAP and
+**Decision – every block gets a `block_log` row**, not only blocks with a goal
+(§7.4). The score columns are simply null for an ordinary block. This keeps
+`activity_log.block_log_id` non-nullable and makes "which activities belonged to
+which block, in which order" a single join rather than a special case.
+
+**Decision – `block_log` also exists because a score belongs to a block.** AMRAP and
 "for time" results (§7.4) have nowhere else to live, and personal bests compare
 *scores for the same unmodified block*, which is exactly what this table holds.
 
@@ -1165,6 +1180,7 @@ credentials from a provisioning step, not from committed source.
 ```
 TrainingCenter/
 ├── docs/                 design notes, wiring diagrams, photos
+│   └── adr/              decision records (§19)
 ├── hub/                  Python services running on the Raspberry Pi
 │   ├── engine/           workout model + state machine (pure Python, unit tested)
 │   ├── input/            input normaliser: buttons/voice/UI/sensors → control intents
@@ -1190,7 +1206,6 @@ TrainingCenter/
 │   ├── audio/            pre-rendered TTS cues and earcons (§12.1, §12.2)
 │   └── exercises/        short demo clips, one per exercise (§9.8)
 ├── plans/                workout plans (YAML), programs/, exercises.yaml
-├── docs/adr/             decision records (§19)
 └── deploy/               systemd units, docker-compose, kiosk setup scripts
 ```
 
@@ -1268,7 +1283,8 @@ path, not folklore:
    (§15.2), confirmed by the node appearing on the health page.
 4. **Pair the heart-rate strap** – scan, select, confirm a live BPM reading.
 5. **Calibrate `hr_max`** – age formula as a starting point, with an explicit
-   option to enter a measured value; zones derive from it (§11).
+   option to enter a measured value. It is stored on the `user` row and the hub
+   derives zones from it (§10.1, §11).
 6. **Pick a starter plan or program** – the system ships with a few, so the
    first session is possible without using the plan editor at all.
 7. **Optional integrations** – Home Assistant (§12.10), backups (§10.3), remote
