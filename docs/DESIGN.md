@@ -19,7 +19,7 @@
 Non-goals (for now): multi-user accounts, a cloud-primary datastore, a native mobile
 app, video/form coaching. The system is **local-first**: it must run a full workout
 with the internet down. Optional, disableable outbound sync and remote access are
-in scope (§10.4), a cloud dependency in the core loop is not.
+in scope (§10.4); a cloud dependency in the core loop is not.
 
 ## 2. High-level picture
 
@@ -328,6 +328,7 @@ Additional transitions (driven by the intents in §8.3):
 | ACTIVE (`distance`) | check-in timer | stays ACTIVE, emits `ask_check_in`; answers update the log |
 | ACTIVE (`reps`, `reps_in_time`) | `rep` (button press or sensor pulse) | stays ACTIVE, increments the counter; completes the activity when the target is reached |
 | ACTIVE | `undo_rep` (long press) | stays ACTIVE, decrements the counter (never below 0) |
+| FEEDBACK, REST (within a 5 s grace window after the target was reached) | `undo_rep` | back to ACTIVE with the counter decremented, so a miscounted final press can be corrected |
 | REST (`until_hr_below`) | HR below threshold, or `max_duration` reached | next activity |
 
 * The engine is **pure logic driven by a clock tick and events** (voice intents,
@@ -552,10 +553,10 @@ need for an online datastore entirely.
 | `tc/presence/motion` | ESP32 presence node | `{"motion": true}` |
 | `tc/presence/ble` | ESP32 presence node | `{"id": "my-phone", "rssi": -62}` |
 | `tc/presence/state` | presence service | `{"state": "arrived", "user": "me"}` |
-| `tc/input/button` | ESP32 button node / serial bridge | `{"node": "wall-1", "button": "rep", "action": "press", "ts": 1733053200.123}` |
-| `tc/input/intent` | input normaliser | `{"intent": "rep", "value": 1, "source": "button", "node": "wall-1", "ts": ...}` |
-| `tc/node/status` | every input/sensor node (LWT, retained) | `{"node": "wall-1", "online": true, "rssi": -58, "battery": 92}` |
-| `tc/node/feedback` | engine / UI | `{"node": "wall-1", "led": "pulse_green", "buzz": "click"}` |
+| `tc/input/button` | ESP32 button node / serial bridge | `{"node": "panel", "button": "rep", "action": "press", "ts": 1733053200.123}` |
+| `tc/input/intent` | input normaliser | `{"intent": "rep", "value": 1, "source": "button", "node": "panel", "ts": ...}` |
+| `tc/node/status` | every input/sensor node (LWT, retained) | `{"node": "wall-rower", "online": true, "rssi": -58, "battery": 92}` |
+| `tc/node/feedback` | engine / UI | `{"node": "panel", "led": "pulse_green", "buzz": "click"}` |
 | `tc/sensor/rower` | optional sensor | `{"meters": 812, "spm": 24}` |
 | `tc/sensor/hr` | HR bridge | `{"bpm": 142, "zone": 3, "rr": [412, 418]}` |
 | `tc/sensor/ambient` | optional sensor | `{"temp_c": 21.4, "humidity": 48}` |
@@ -657,9 +658,10 @@ indicator so you always know *why* something is not answering.
 
 ### 12.7 Low friction
 
-* **Quick start**: one long press of Start at the door launches your usual plan –
-  no menus, no list, no selection. The best training experience is the one with
-  the least friction before the first rep.
+* **Quick start**: one long press of Start on the wall panel launches your usual
+  plan – no menus, no list, no selection. The best training experience is the one
+  with the least friction before the first rep. (If a node by the door turns out
+  to be worth it, it is just another `node` id – see §3.1.)
 * Presence-triggered wake-up means the system is already on the right screen when
   you walk in (§6).
 * Warm-up and cool-down are part of the plan model, not something to remember,
@@ -670,8 +672,10 @@ indicator so you always know *why* something is not answering.
 * **Sweaty hands**: large physical buttons and large on-screen hit areas; no
   gesture or precision-touch requirement anywhere.
 * **Bright room**: high contrast, large type, no thin fonts, no pastel on white.
-* **One-press emergency stop**: hold Done for 3 s ends everything immediately
-  (§4.2). Always available, in every state.
+* **Hold-to-stop emergency stop**: holding Done for 3 s ends everything
+  immediately (§4.2). The hold is deliberate – it must be impossible to trigger
+  by brushing past the panel – but it is available in every state, from every
+  node, with no confirmation dialogue.
 * Audio and visual channels are redundant, so the system is usable with the
   sound off or without looking at the screen.
 
