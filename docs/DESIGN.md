@@ -216,7 +216,7 @@ Each activity declares how its reps are counted (§7.2, `count_mode`):
 
 | Mode | Meaning |
 |------|---------|
-| `manual_button` | One Rep/Lap press = one rep (§4.2) |
+| `manual_button` | One Rep/Lap press = one rep (§4.2). Degrades to `voice` at runtime when no physical button node is online, even when the plan set it explicitly – the plan states the *intent*, availability decides what is actually possible (§12.6) |
 | `sensor` | A sensor publishes the count/distance; buttons still work as an override |
 | `voice` | Reported verbally after the set ("I did eight") |
 | `auto` | Derived from the timer alone (e.g. `timed` activities) |
@@ -307,7 +307,7 @@ Schema additions beyond the original draft:
 
 | Field | Applies to | Meaning |
 |-------|------------|---------|
-| `count_mode` | plan, block, activity | How reps/laps are counted: `manual_button`, `sensor`, `voice`, `auto` (§5.4). Innermost wins. |
+| `count_mode` | plan, block, activity | How reps/laps are counted: `manual_button`, `sensor`, `voice`, `auto` (§5.4). Innermost wins. This is a *preference*: if the hardware it needs is offline, the engine degrades it at runtime (§5.4, §12.6) rather than failing. |
 | `until_hr_below` | `rest` | End the rest when heart rate drops below this value – requires a Tier‑1 HR sensor (§5.1). |
 | `max_duration` | `rest` | Safety cap for `until_hr_below`, and the fallback when no HR sensor is available. |
 | `hr_zone` | any work activity | Target zone shown on screen; out-of-zone is a hint, never a blocker. |
@@ -582,7 +582,7 @@ need for an online datastore entirely.
 | `tc/node/status` | broker, on behalf of a node (retained MQTT Last Will) | `{"node": "wall-rower", "online": false}` |
 | `tc/node/feedback` | engine / UI | `{"node": "panel", "led": "pulse_green", "buzz": "click"}` |
 | `tc/sensor/rower` | optional sensor | `{"meters": 812, "spm": 24}` |
-| `tc/sensor/hr` | HR bridge | `{"bpm": 142, "zone": 3, "rr": [412, 418]}` |
+| `tc/sensor/hr` | HR bridge | `{"bpm": 142, "rr": [412, 418]}` – the hub derives the zone from `bpm` and the user's `hr_max` (§10.1); the node only reports what it measures |
 | `tc/sensor/ambient` | optional sensor | `{"temp_c": 21.4, "humidity": 48}` |
 | `tc/sensor/equipment` | rower monitor / FTMS bike bridge | `{"device": "pm5", "meters": 812, "watts": 184, "cadence": 24}` |
 | `tc/voice/intent` | voice service | `{"intent": "report_reps", "value": 8, "lang": "da", "text": "otte"}` |
