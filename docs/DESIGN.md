@@ -150,16 +150,14 @@ in firmware; the hub only ever sees clean events.
 | **Done / Confirm** | Complete the current activity, or confirm a feedback prompt | – | – |
 | **Hard / Easy** (optional pair) | Record `feeling` without speaking | – | – |
 
-**Hold (≥3 s)** is defined only on Done and on Rep/Lap, where it is the
-emergency stop (§12.8). On every other button a hold is **ignored** – it is not
-a second long press – so leaning on the panel cannot do anything.
-
-A third gesture, **hold (≥3 s)**, is reserved for stopping the session
-(§12.8): on Done, and on Rep/Lap for single-button nodes that have no Done
-button. Because a hold necessarily passes through the `long` threshold, the
-firmware **buffers the gesture until the button is released or the 3 s threshold
-is reached**, then emits *either* `long` *or* `hold` – never both. A 3 s hold on
-Rep/Lap therefore stops the session without first undoing a rep.
+A third gesture, **hold (≥3 s)**, is reserved for stopping the session (§12.8).
+It is recognised on **Done**, and on **Rep/Lap on single-button nodes that have
+no Done button** – nowhere else. On every other button a hold is **ignored**, so
+leaning on the panel cannot do anything. Because a hold necessarily passes
+through the `long` threshold, the firmware **buffers the gesture until the button
+is released or the 3 s threshold is reached**, then emits *either* `long` *or*
+`hold` – never both. A 3 s hold on a single-button node's Rep/Lap therefore stops
+the session without first undoing a rep.
 
 For `reps` activities the Rep button **replaces the "how many did you do?"
 dialogue entirely** – the count is already known, so the engine skips straight to
@@ -220,14 +218,16 @@ Each activity declares how its reps are counted (§7.2, `count_mode`):
 
 | Mode | Meaning |
 |------|---------|
-| `manual_button` | One Rep/Lap press = one rep (§4.2). Degrades to `voice` at runtime when no physical button node is online, even when the plan set it explicitly – the plan states the *intent*, availability decides what is actually possible (§12.6) |
+| `manual_button` | One Rep/Lap press = one rep (§4.2); see the availability rule below |
 | `sensor` | A sensor publishes the count/distance; buttons still work as an override |
 | `voice` | Reported verbally after the set ("I did eight") |
 | `auto` | Derived from the timer alone (e.g. `timed` activities) |
 
-Default: `manual_button` while at least one **physical button node** (`panel`,
-`wall-rower`, `floor`, or the Arduino I/O board) is online, otherwise `voice`
-(§12.6). The `kiosk` and `phone` nodes deliberately do **not** count: an open
+**Availability rule.** `manual_button` applies – both as the default and when a
+plan requests it explicitly – only while at least one **physical button node**
+(`panel`, `wall-rower`, `floor`, or the Arduino I/O board) is online; otherwise
+the mode degrades to `voice` at runtime (§12.6). A plan states the *intent*;
+availability decides what is actually possible. The `kiosk` and `phone` nodes deliberately do **not** count: an open
 browser tab is not something you can press mid-burpee, so it must not keep the
 system in a mode that assumes a reachable physical button. Both can still send
 every intent at any time.
