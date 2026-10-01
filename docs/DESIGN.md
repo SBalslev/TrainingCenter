@@ -204,7 +204,8 @@ Each activity declares how its reps are counted (§7.2, `count_mode`):
 | `voice` | Reported verbally after the set ("I did eight") |
 | `auto` | Derived from the timer alone (e.g. `timed` activities) |
 
-Default: `manual_button` when a control node is online, otherwise `voice`.
+Default: `manual_button` while **at least one** control node is online, otherwise
+`voice` (§12.6).
 
 ## 6. Presence detection & greeting (G1)
 
@@ -405,7 +406,7 @@ separate system. **One codebase, one API, one WebSocket stream, two UI modes.**
 | Device | Wall display / TV, Chromium kiosk | Phone, tablet, laptop |
 | Design | Huge type, glanceable at 3–4 m, no interaction required | Dense, interactive, thumb-friendly |
 | Purpose | Guide the session in progress | Manage plans, control remotely, review statistics |
-| Auth | None (it is the room) | Login required (§13) |
+| Auth | None, but reachable only from the local display (§13) | Login required (§13) |
 
 ### 9.1 Kiosk screens
 
@@ -555,7 +556,8 @@ need for an online datastore entirely.
 | `tc/presence/state` | presence service | `{"state": "arrived", "user": "me"}` |
 | `tc/input/button` | ESP32 button node / serial bridge | `{"node": "panel", "button": "rep", "action": "press", "ts": 1733053200.123}` |
 | `tc/input/intent` | input normaliser | `{"intent": "rep", "value": 1, "source": "button", "node": "panel", "ts": ...}` |
-| `tc/node/status` | every input/sensor node (LWT, retained) | `{"node": "wall-rower", "online": true, "rssi": -58, "battery": 92}` |
+| `tc/node/status` | every input/sensor node, periodically (retained) | `{"node": "wall-rower", "online": true, "rssi": -58, "battery": 92}` |
+| `tc/node/status` | broker, on behalf of a node (retained MQTT Last Will) | `{"node": "wall-rower", "online": false}` |
 | `tc/node/feedback` | engine / UI | `{"node": "panel", "led": "pulse_green", "buzz": "click"}` |
 | `tc/sensor/rower` | optional sensor | `{"meters": 812, "spm": 24}` |
 | `tc/sensor/hr` | HR bridge | `{"bpm": 142, "zone": 3, "rr": [412, 418]}` |
@@ -568,8 +570,11 @@ need for an online datastore entirely.
 `action` is one of `press`, `long`, `double` (§4.2). `node` identifies *which*
 panel sent it (§3.1), so a new button is a new `node` id and nothing else.
 
-Every node publishes a retained **last-will status** on `tc/node/status`, which is
-what lets the UI show which inputs and sensors are actually alive (§12.6).
+Node liveness uses two retained messages on the same topic: the node itself
+publishes a periodic status (`online: true`, plus signal strength and battery),
+and it registers an MQTT **Last Will** (`online: false`) that the broker publishes
+if the node disconnects ungracefully or its keepalive expires. Together they let
+the UI show which inputs and sensors are actually alive (§12.6).
 
 The broker is only reachable on the local network and uses username/password
 authentication (§13).
@@ -650,7 +655,7 @@ indicator so you always know *why* something is not answering.
 |---------|-----------|
 | Microphone unavailable / STT failing | Voice indicator turns grey with a reason; buttons and timers continue; no attempt to listen |
 | MQTT broker down | Hub keeps running the session from local state; inputs that depend on the bus are marked offline; broker reconnect is automatic |
-| Button node offline (missed LWT heartbeat) | Node greyed out in the status strip; other nodes and voice still work; `count_mode` falls back to `voice` |
+| Button node offline (LWT received, or keepalive timeout) | Node greyed out in the status strip; other nodes and voice still work. `count_mode` falls back to `voice` **only when no control node remains online** (§5.4) |
 | Sensor offline mid-activity | Fall back to the time/button goal for that activity (§5), log the gap, show the degraded badge |
 | Display asleep or HDMI lost | Audio cues continue uninterrupted; display is re-woken on the next presence or input event |
 | Power cut mid-session | On boot, offer "resume your session from 12 minutes ago?" from the persisted state |
@@ -674,8 +679,10 @@ indicator so you always know *why* something is not answering.
 * **Bright room**: high contrast, large type, no thin fonts, no pastel on white.
 * **Hold-to-stop emergency stop**: holding Done for 3 s ends everything
   immediately (§4.2). The hold is deliberate – it must be impossible to trigger
-  by brushing past the panel – but it is available in every state, from every
-  node, with no confirmation dialogue.
+  by brushing past the panel – but it works in every engine state, with no
+  confirmation dialogue. On single-button nodes such as `floor`, which have no
+  Done button, a 3 s hold on Rep/Lap does the same thing, so a stop is always
+  within reach of whichever node you are standing at.
 * Audio and visual channels are redundant, so the system is usable with the
   sound off or without looking at the screen.
 
@@ -687,7 +694,7 @@ needs stating explicitly.
 | Surface | Protection |
 |---------|-----------|
 | MQTT broker | LAN-only bind, username/password per client, no anonymous access; nodes use per-node credentials so one can be revoked |
-| Web API + UI (kiosk) | Reachable on the LAN; kiosk mode on the local display needs no login |
+| Web API + UI (kiosk) | **Not** open to the LAN: the unauthenticated kiosk endpoints are bound to localhost (or gated by a per-device token provisioned at kiosk setup), so only the local display can use them. Every other LAN client goes through the authenticated companion path below |
 | Web API + UI (companion) | Login required – single user, hashed password, long-lived session cookie, CSRF protection on state-changing requests |
 | Transport | HTTPS on the LAN with a locally issued certificate; never plain HTTP for the companion UI |
 | Remote access | **VPN only** (Tailscale / WireGuard). No port forwarding, no exposing the hub to the internet |
