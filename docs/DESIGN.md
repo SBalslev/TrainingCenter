@@ -584,6 +584,7 @@ need for an online datastore entirely.
 | `tc/sensor/rower` | optional sensor | `{"meters": 812, "spm": 24}` |
 | `tc/sensor/hr` | HR bridge | `{"bpm": 142, "zone": 3, "rr": [412, 418]}` |
 | `tc/sensor/ambient` | optional sensor | `{"temp_c": 21.4, "humidity": 48}` |
+| `tc/sensor/equipment` | rower monitor / FTMS bike bridge | `{"device": "pm5", "meters": 812, "watts": 184, "cadence": 24}` |
 | `tc/voice/intent` | voice service | `{"intent": "report_reps", "value": 8, "lang": "da", "text": "otte"}` |
 | `tc/voice/say` | engine / presence | `{"text": "Næste øvelse: armstrækninger", "lang": "da", "priority": "high"}` |
 | `tc/engine/state` | workout engine | full current state snapshot (retained) |
@@ -591,7 +592,8 @@ need for an online datastore entirely.
 
 `action` is one of `press`, `long` (≥1 s), `hold` (≥3 s) or `double` (§4.2).
 `node` identifies *which* panel sent it (§3.1), so a new button is a new `node`
-id and nothing else.
+id and nothing else. `ts` is **hub** time, derived from the relative age the node
+reports with each event (§12.6) – node wall clocks are not trusted.
 
 Node liveness uses two retained messages on the same topic: the node itself
 publishes a periodic status (`online: true`, plus signal strength and battery),
@@ -677,16 +679,28 @@ indicator so you always know *why* something is not answering.
 | Failure | Behaviour |
 |---------|-----------|
 | Microphone unavailable / STT failing | Voice indicator turns grey with a reason; buttons and timers continue; no attempt to listen |
-| MQTT broker down | The session keeps running **on timers only**: every input reaches the engine over the bus, so remote nodes, voice and the UI all stop producing intents. The kiosk shows a prominent "inputs offline" banner, `timed`/`rest` activities continue uninterrupted, and `reps` activities hold at their current count rather than being lost. Reconnect is automatic. Queued node events are replayed **only if they are
-still relevant**: an event is dropped when its `ts` predates the start of the
-currently active activity, or is older than a short max age (e.g. 10 s). This
-prevents a `next`/`done`/`rep` pressed during the outage from being applied to a
-later activity and skipping work or crediting reps to the wrong exercise. (If this proves too fragile in practice, the fallback is an in-process path for hub-local inputs – voice and kiosk – bypassing the broker.) |
-| Button node offline (LWT received, or keepalive timeout) | Node greyed out in the status strip; other nodes and voice still work. `count_mode` falls back to `voice` **only when no control node remains online** (§5.4) |
+| MQTT broker down | The session keeps running **on timers only** – every input reaches the engine over the bus, so remote nodes, voice and the UI all stop producing intents. The kiosk shows a prominent "inputs offline" banner, `timed`/`rest` activities continue uninterrupted, and `reps` activities hold at their current count rather than being lost. Reconnect is automatic; see the replay rule below. |
+| Button node offline (LWT received, or keepalive timeout) | Node greyed out in the status strip; other nodes and voice still work. `count_mode` falls back to `voice` **only when no physical button node remains online** (§5.4) |
 | Sensor offline mid-activity | Fall back to the time/button goal for that activity (§5), log the gap, show the degraded badge |
 | Display asleep or HDMI lost | Audio cues continue uninterrupted; display is re-woken on the next presence or input event |
 | Power cut mid-session | On boot, offer "resume your session from 12 minutes ago?" from the persisted state |
 | Audio output missing | Screen and LED carry all cues; a one-line warning on the idle screen |
+
+**Replay rule after a broker outage.** Events a node buffered while it was
+disconnected are replayed on reconnect, but **only if they are still relevant** –
+otherwise a `next` pressed during the outage would be applied to whatever
+activity happens to be current afterwards, skipping work or crediting reps to the
+wrong exercise. An event is dropped when it is older than a short max age
+(e.g. 10 s) or when it predates the start of the currently active activity.
+
+Node timestamps cannot be trusted for this: an ESP32 has no reliable wall clock,
+while the hub times activities on its own monotonic clock (§7.3). Nodes therefore
+send a **relative age** (milliseconds since the press) alongside the event, and
+the hub converts it to hub time on arrival. The `ts` field in §11 is the
+hub-assigned time; the node-supplied age is what the node actually measures.
+
+If timer-only operation proves too fragile in practice, the fallback is an
+in-process path for hub-local inputs – voice and kiosk – bypassing the broker.
 
 ### 12.7 Low friction
 
