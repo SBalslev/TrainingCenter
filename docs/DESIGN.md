@@ -357,6 +357,11 @@ per-exercise progression in §9.4 and the progressive-overload suggestions in
   the last logged `actual_weight_kg` for that exercise, then `default_weight` from
   the exercise library (§7.5). This means a plan can say "back squat 3×8" with no
   number at all and still show you a sensible target.
+* **Progression follows the `weight`, not the type.** Any activity that carries
+  a load – a `weighted_reps` set or a `reps` set with a loaded implement – is
+  logged with its weight and counts towards per-exercise progression (§9.4) and
+  overload suggestions (§12.5). `weighted_reps` differs only in presentation: it
+  treats the load as the headline number and prompts to confirm it afterwards.
 * **Bodyweight exercises carry no weight.** For exercises marked
   `bodyweight: true` the field is absent, not zero. Added load (weighted vest,
   dip belt) is expressed as `weight` on an otherwise bodyweight exercise.
@@ -543,6 +548,16 @@ derived, not guessed:
 | `skipped` | Started but < 50 % recorded, or skipped outright with `next` |
 | `not_reached` | The session ended before this activity was reached at all – **not** the same as skipping it |
 | `trimmed` | Removed up front by the time budget (§7.7) – excluded from completion statistics entirely |
+
+Two cases do not come from counting:
+
+* An explicit **`done`** below the target is `completed`, not `partial`. You said
+  the set was finished; the system must not second-guess that. The gap between
+  target and actual is still logged and still visible in progression.
+* A **rest** is `completed` whenever it ends normally – including an
+  `until_hr_below` rest that ends on the HR condition or on `max_duration`, and
+  including one cut short with `next`. Rests are not work, and counting them as
+  failures would make the completion rate meaningless.
 
 The 50 % boundary between `partial` and `skipped` is a **configurable setting**,
 not a constant: it is the point at which "I did some of it" stops being a fair
@@ -1044,7 +1059,7 @@ indicator so you always know *why* something is not answering.
 | Failure | Behaviour |
 |---------|-----------|
 | Microphone unavailable / STT failing | Voice indicator turns grey with a reason; buttons and timers continue; no attempt to listen |
-| MQTT broker down | The session keeps running **on timers only** – every input reaches the engine over the bus, so remote nodes, voice and the UI all stop producing intents. The kiosk shows a prominent "inputs offline" banner, `timed`/`rest` activities continue uninterrupted, and `reps` activities hold at their current count rather than being lost. Reconnect is automatic; see the replay rule below. |
+| MQTT broker down | The kiosk keeps updating, because the engine pushes state to it over the WebSocket (§9), not over the bus – so the banner and the countdown are both still visible. The session keeps running **on timers only** – every input reaches the engine over the bus, so remote nodes, voice and the UI all stop producing intents. The kiosk shows a prominent "inputs offline" banner, `timed`/`rest` activities continue uninterrupted, and `reps` activities hold at their current count rather than being lost. Reconnect is automatic; see the replay rule below. |
 | Button node offline (LWT received, or keepalive timeout) | Node greyed out in the status strip; other nodes and voice still work. `count_mode` falls back to `voice` **only when no physical button node remains online** (§5.4) |
 | Sensor offline mid-activity | Fall back to the time/button goal for that activity (§5), log the gap, show the degraded badge |
 | Display asleep or HDMI lost | Audio cues continue uninterrupted; display is re-woken on the next presence or input event |
