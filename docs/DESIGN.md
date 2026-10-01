@@ -120,7 +120,10 @@ pipeline. The engine therefore treats every input source equally.
 * The normaliser **subscribes** to `tc/input/button` (physical nodes and the
   serial bridge), `tc/input/ui` (kiosk and companion taps), `tc/voice/intent`
   and the goal-relevant sensor topics `tc/sensor/rower`, `tc/sensor/hr`,
-  `tc/sensor/equipment` (§11). It converts each of them into a **control
+  `tc/sensor/equipment` (§11). Tier‑2 rep-detection sensors (`tc/sensor/imu`,
+  `tc/sensor/mat`, `tc/sensor/gate`, §5.2) are added to this list as each is
+  implemented – any sensor that can complete a goal must be subscribed to here,
+  or it can never reach the engine. It converts each of them into a **control
   intent** using exactly the vocabulary of §8.3 (`start_workout`, `pause`,
   `next`, `done`, `report_reps`, `feeling`, …).
 * It **publishes** on `tc/input/intent`, which is its output only – nothing
@@ -218,8 +221,12 @@ Each activity declares how its reps are counted (§7.2, `count_mode`):
 | `voice` | Reported verbally after the set ("I did eight") |
 | `auto` | Derived from the timer alone (e.g. `timed` activities) |
 
-Default: `manual_button` while **at least one** control node is online, otherwise
-`voice` (§12.6).
+Default: `manual_button` while at least one **physical button node** (`panel`,
+`wall-rower`, `floor`, or the Arduino I/O board) is online, otherwise `voice`
+(§12.6). The `kiosk` and `phone` nodes deliberately do **not** count: an open
+browser tab is not something you can press mid-burpee, so it must not keep the
+system in a mode that assumes a reachable physical button. Both can still send
+every intent at any time.
 
 ## 6. Presence detection & greeting (G1)
 
@@ -670,7 +677,11 @@ indicator so you always know *why* something is not answering.
 | Failure | Behaviour |
 |---------|-----------|
 | Microphone unavailable / STT failing | Voice indicator turns grey with a reason; buttons and timers continue; no attempt to listen |
-| MQTT broker down | The session keeps running **on timers only**: every input reaches the engine over the bus, so remote nodes, voice and the UI all stop producing intents. The kiosk shows a prominent "inputs offline" banner, `timed`/`rest` activities continue uninterrupted, and `reps` activities hold at their current count rather than being lost. Reconnect is automatic and queued node events are replayed on reconnect. (If this proves too fragile in practice, the fallback is an in-process path for hub-local inputs – voice and kiosk – bypassing the broker.) |
+| MQTT broker down | The session keeps running **on timers only**: every input reaches the engine over the bus, so remote nodes, voice and the UI all stop producing intents. The kiosk shows a prominent "inputs offline" banner, `timed`/`rest` activities continue uninterrupted, and `reps` activities hold at their current count rather than being lost. Reconnect is automatic. Queued node events are replayed **only if they are
+still relevant**: an event is dropped when its `ts` predates the start of the
+currently active activity, or is older than a short max age (e.g. 10 s). This
+prevents a `next`/`done`/`rep` pressed during the outage from being applied to a
+later activity and skipping work or crediting reps to the wrong exercise. (If this proves too fragile in practice, the fallback is an in-process path for hub-local inputs – voice and kiosk – bypassing the broker.) |
 | Button node offline (LWT received, or keepalive timeout) | Node greyed out in the status strip; other nodes and voice still work. `count_mode` falls back to `voice` **only when no control node remains online** (§5.4) |
 | Sensor offline mid-activity | Fall back to the time/button goal for that activity (§5), log the gap, show the degraded badge |
 | Display asleep or HDMI lost | Audio cues continue uninterrupted; display is re-woken on the next presence or input event |
