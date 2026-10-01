@@ -697,12 +697,8 @@ otherwise a `next` pressed during the outage would be applied to whatever
 activity happens to be current afterwards, skipping work or crediting reps to the
 wrong exercise. An event is dropped when it is older than a short max age
 (e.g. 10 s) or when it predates the start of the currently active activity.
-
-Node timestamps cannot be trusted for this: an ESP32 has no reliable wall clock,
-while the hub times activities on its own monotonic clock (§7.3). Nodes therefore
-send a **relative age** (milliseconds since the press) alongside the event, and
-the hub converts it to hub time on arrival. Node messages therefore carry `age_ms`, never a
-timestamp; the `ts` on `tc/input/intent` is hub-assigned (§11).
+Relevance is judged on hub time derived from the node's `age_ms` (§11), never on
+a node-supplied timestamp.
 
 If timer-only operation proves too fragile in practice, the fallback is an
 in-process path for hub-local inputs – voice and kiosk – bypassing the broker.
