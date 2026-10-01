@@ -141,19 +141,18 @@ pipeline. The engine therefore treats every input source equally.
 Defining these now stops them being invented ad hoc per device. Debounce happens
 in firmware; the hub only ever sees clean events.
 
-| Button | Short press | Long press (≥1 s) | Double press |
-|--------|-------------|-------------------|--------------|
-| **Rep / Lap** (big green) | Count one rep, or complete one round/lap, depending on the current activity type | Undo the last rep | – |
-| **Start / Pause** | Start, or toggle pause/resume | Quick-start the usual plan from idle (§12.7) | – |
-| **Next** | Advance to the next activity | – | Skip the rest of the current block |
-| **Previous** | Restart the current activity | Go back to the previous activity | – |
-| **Done / Confirm** | Complete the current activity, or confirm a feedback prompt | – | – |
-| **Hard / Easy** (optional pair) | Record `feeling` without speaking | – | – |
+| Button | Short press | Long press (≥1 s) | Hold (≥3 s) | Double press |
+|--------|-------------|-------------------|-------------|--------------|
+| **Rep / Lap** (big green) | Count one rep, or complete one round/lap, depending on the current activity type | Undo the last rep | Stop the session – **single-button nodes only** | – |
+| **Start / Pause** | Start, or toggle pause/resume | Quick-start the usual plan from idle (§12.7) | ignored | – |
+| **Next** | Advance to the next activity | – | ignored | Skip the rest of the current block |
+| **Previous** | Restart the current activity | Go back to the previous activity | ignored | – |
+| **Done / Confirm** | Complete the current activity, or confirm a feedback prompt | – | Stop the session (§12.8) | – |
+| **Hard / Easy** (optional pair) | Record `feeling` without speaking | – | ignored | – |
 
-A third gesture, **hold (≥3 s)**, is reserved for stopping the session (§12.8).
-It is recognised on **Done**, and on **Rep/Lap on single-button nodes that have
-no Done button** – nowhere else. On every other button a hold is **ignored**, so
-leaning on the panel cannot do anything. Because a hold necessarily passes
+The **hold** column is the emergency stop (§12.8). It is recognised only where
+the table says so, so leaning on the panel cannot do anything. Because a hold
+necessarily passes
 through the `long` threshold, the firmware **buffers the gesture until the button
 is released or the 3 s threshold is reached**, then emits *either* `long` *or*
 `hold` – never both. A 3 s hold on a single-button node's Rep/Lap therefore stops
@@ -214,7 +213,8 @@ loop.
 
 ### 5.4 Rep counting modes
 
-Each activity declares how its reps are counted (§7.2, `count_mode`):
+Each activity declares how its reps are counted (`count_mode`), with a plan-wide
+default and a per-activity override (§7.2):
 
 | Mode | Meaning |
 |------|---------|
@@ -223,11 +223,11 @@ Each activity declares how its reps are counted (§7.2, `count_mode`):
 | `voice` | Reported verbally after the set ("I did eight") |
 | `auto` | Derived from the timer alone (e.g. `timed` activities) |
 
-**Availability rule.** `manual_button` applies – both as the default and when a
-plan requests it explicitly – only while at least one **physical button node**
-(`panel`, `wall-rower`, `floor`, or the Arduino I/O board) is online; otherwise
-the mode degrades to `voice` at runtime (§12.6). A plan states the *intent*;
-availability decides what is actually possible. The `kiosk` and `phone` nodes deliberately do **not** count: an open
+**Availability rule.** `manual_button` applies – both as the default and when
+a plan requests it explicitly – only while at least one **physical button
+node** (`panel`, `wall-rower`, `floor`, or the Arduino I/O board) is online;
+otherwise the mode degrades to `voice` at runtime (§12.6). A plan states the
+*intent*; availability decides what is actually possible. The `kiosk` and `phone` nodes deliberately do **not** count: an open
 browser tab is not something you can press mid-burpee, so it must not keep the
 system in a mode that assumes a reachable physical button. Both can still send
 every intent at any time.
@@ -311,8 +311,7 @@ blocks:
       - { type: reps, exercise: push_ups, reps: 10, count_mode: manual_button }
       - { type: rest, duration: 30s, until_hr_below: 130, max_duration: 90s }
   - name: Finisher
-    rounds: 1
-    goal: { type: amrap, time_cap: 8min }     # block-level goal, §7.4
+    goal: { type: amrap, time_cap: 8min }     # no `rounds`: the goal drives it, §7.4
     activities:
       - { type: reps, exercise: kettlebell_swings, reps: 15, weight: 16kg }  # loaded, so it feeds progression too (§7.3)
       - { type: reps, exercise: push_ups, reps: 10 }
@@ -329,9 +328,9 @@ Schema additions beyond the original draft:
 | Field | Applies to | Meaning |
 |-------|------------|---------|
 | `schema_version` | plan | Which version of this schema the file targets (§10.7). |
-| `count_mode` | plan, block, activity | How reps/laps are counted: `manual_button`, `sensor`, `voice`, `auto` (§5.4). Innermost wins. This is a *preference*: if the hardware it needs is offline, the engine degrades it at runtime (§5.4, §12.6) rather than failing. |
+| `count_mode` | plan, activity | How reps/laps are counted: `manual_button`, `sensor`, `voice`, `auto` (§5.4). Innermost wins. This is a *preference*: if the hardware it needs is offline, the engine degrades it at runtime (§5.4, §12.6) rather than failing. |
 | `weight` | `weighted_reps`, and any `reps`/`reps_in_time` activity using a loaded implement | Target load (§7.3). |
-| `goal` | block | Block-level goal – `amrap` or `for_time` (§7.4). Without it, a block is simply its rounds. |
+| `goal` | block | Block-level goal – `amrap` or `for_time` (§7.4). An `amrap` block must **not** declare `rounds` (the time cap ends it); a `for_time` block **must**, since the fixed work is what is being timed. |
 | `optional` | block, activity | May be trimmed to fit a time budget (§7.7) without counting as skipped. |
 | `until_hr_below` | `rest` | End the rest when heart rate drops below this value – requires a Tier‑1 HR sensor (§5.1). |
 | `max_duration` | `rest` | Safety cap for `until_hr_below`, and the fallback when no HR sensor is available. |
@@ -393,6 +392,10 @@ block, better score".
 
 Rules:
 
+* **`rounds` and the goal type go together.** An `amrap` block declares no
+  `rounds` – it repeats its activity list until the cap. A `for_time` block
+  declares `rounds` as usual, because the fixed work is exactly what is being
+  timed. The loader rejects the other combinations rather than guessing.
 * Scores are only comparable when the block is **unmodified** – same activities,
   same reps, same loads, same cap. A trimmed or adjusted block is logged with
   `modified: true` and excluded from PB comparison, so an easier version never
@@ -564,10 +567,10 @@ Two cases do not come from counting:
   failures would make the completion rate meaningless.
 
 The **partial threshold** – the boundary between `partial` and `skipped`,
-default 50 % – is a **configurable setting**,
-not a constant: it is the point at which "I did some of it" stops being a fair
-description. It is set once, globally, and changing it recomputes the derived
-statistics rather than rewriting the logged counts, which are the facts.
+default 50 % – is a configurable setting, not a constant: it is the point at
+which "I did some of it" stops being a fair description. It is set once,
+globally, and changing it recomputes the derived statistics rather than
+rewriting the logged counts, which are the facts.
 
 * A **session** is `completed` when every non-optional activity is `completed` or
   `partial`, `stopped` when it was ended early, and `abandoned` when it was never
@@ -1064,12 +1067,20 @@ indicator so you always know *why* something is not answering.
 | Failure | Behaviour |
 |---------|-----------|
 | Microphone unavailable / STT failing | Voice indicator turns grey with a reason; buttons and timers continue; no attempt to listen |
-| MQTT broker down | The kiosk keeps *displaying*, because the engine pushes state to it over the WebSocket (§9), not over the bus – so the banner and the countdown are both still visible. Kiosk and companion **taps stop working**, because they reach the engine via `tc/input/ui` (§11) like every other input. The session keeps running **on timers only** – every input reaches the engine over the bus, so remote nodes, voice and the UI all stop producing intents. The kiosk shows a prominent "inputs offline" banner, `timed`/`rest` activities continue uninterrupted, and `reps` activities hold at their current count rather than being lost. Reconnect is automatic; see the replay rule below. |
+| MQTT broker down | **All input stops; the session keeps running on timers.** See the paragraph below |
 | Button node offline (LWT received, or keepalive timeout) | Node greyed out in the status strip; other nodes and voice still work. `count_mode` falls back to `voice` **only when no physical button node remains online** (§5.4) |
 | Sensor offline mid-activity | Fall back to the time/button goal for that activity (§5), log the gap, show the degraded badge |
 | Display asleep or HDMI lost | Audio cues continue uninterrupted; display is re-woken on the next presence or input event |
 | Power cut mid-session | On boot, offer "resume your session from 12 minutes ago?" from the persisted state |
 | Audio output missing | Screen and LED carry all cues; a one-line warning on the idle screen |
+
+**Broker outage in detail.** Every input – physical nodes, voice, and kiosk and
+companion taps via `tc/input/ui` (§11) – reaches the engine over the bus, so all
+of them stop producing intents. The kiosk keeps *displaying*, because the engine
+pushes state to it over the WebSocket (§9), so the countdown and a prominent
+"inputs offline" banner stay visible. `timed` and `rest` activities continue
+uninterrupted and `reps` activities hold at their current count rather than
+being lost. Reconnect is automatic.
 
 **Replay rule after a broker outage.** Events a node buffered while it was
 disconnected are replayed on reconnect, but **only if they are still relevant** –
