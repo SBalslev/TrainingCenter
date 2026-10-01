@@ -139,8 +139,15 @@ in firmware; the hub only ever sees clean events.
 | **Start / Pause** | Start, or toggle pause/resume | Quick-start the usual plan from idle (§12.7) | – |
 | **Next** | Advance to the next activity | – | Skip the rest of the current block |
 | **Previous** | Restart the current activity | Go back to the previous activity | – |
-| **Done / Confirm** | Complete the current activity, or confirm a feedback prompt | Hold 3 s: stop the session (emergency stop, §12.8) | – |
+| **Done / Confirm** | Complete the current activity, or confirm a feedback prompt | – | – |
 | **Hard / Easy** (optional pair) | Record `feeling` without speaking | – | – |
+
+A third gesture, **hold (≥3 s)**, is reserved for stopping the session
+(§12.8): on Done, and on Rep/Lap for single-button nodes that have no Done
+button. Because a hold necessarily passes through the `long` threshold, the
+firmware **buffers the gesture until the button is released or the 3 s threshold
+is reached**, then emits *either* `long` *or* `hold` – never both. A 3 s hold on
+Rep/Lap therefore stops the session without first undoing a rep.
 
 For `reps` activities the Rep button **replaces the "how many did you do?"
 dialogue entirely** – the count is already known, so the engine skips straight to
@@ -152,9 +159,11 @@ Every press must produce immediate multi-sensory confirmation: LED ring flash +
 short buzzer click (locally on the node, not waiting for the hub) and the
 on-screen counter incrementing.
 
-> **Non-functional requirement:** button press → visible/audible confirmation in
-> **< 100 ms** end-to-end. This is the single biggest "feels great vs. feels
-> broken" factor and is treated as a hard requirement, not a nice-to-have.
+> **Non-functional requirement:** button press → **node-local** LED flash and
+> buzzer click in **< 100 ms**. This is the single biggest "feels great vs.
+> feels broken" factor and is treated as a hard requirement, not a
+> nice-to-have. The hub-driven screen update is a separate, looser budget of
+> < 200 ms (§12.1), because it crosses the network.
 
 The local click/flash is fired by the node itself so it is never blocked by Wi‑Fi,
 MQTT or hub latency; the hub-driven screen update follows.
@@ -567,8 +576,9 @@ need for an online datastore entirely.
 | `tc/engine/state` | workout engine | full current state snapshot (retained) |
 | `tc/engine/event` | workout engine | `{"event": "countdown", "seconds_left": 3}` |
 
-`action` is one of `press`, `long`, `double` (§4.2). `node` identifies *which*
-panel sent it (§3.1), so a new button is a new `node` id and nothing else.
+`action` is one of `press`, `long` (≥1 s), `hold` (≥3 s) or `double` (§4.2).
+`node` identifies *which* panel sent it (§3.1), so a new button is a new `node`
+id and nothing else.
 
 Node liveness uses two retained messages on the same topic: the node itself
 publishes a periodic status (`online: true`, plus signal strength and battery),
