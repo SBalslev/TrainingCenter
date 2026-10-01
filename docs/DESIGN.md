@@ -31,17 +31,18 @@ in scope (§10.4), a cloud dependency in the core loop is not.
  (BLE + mmWave) │   │  service     │    │ wake word,    │    │ state machine,│    │ SQLite history │   │
                 │   └──────┬───────┘    │ STT, intents, │    │ timers, plans │    └───────▲────────┘   │
  ESP32 buttons, │          │            │ TTS           │    └──────┬────────┘            │            │
- LEDs ──── MQTT─┼──────────┤            └──────┬────────┘           │                     │            │
-                │          │   ┌─────────────┐ │                    │                     │            │
- Arduino Uno ───┼─ serial ─┼──▶│ serial      │ │                    │                     │            │
- (USB)          │          │   │ bridge      │ │                    │                     │            │
-                │          │   └──────┬──────┘ │                    │                     │            │
-                │          ▼          ▼        ▼                    ▼                     │            │
+ LEDs, buzzer ──┼──MQTT────┤            └──────┬────────┘           │                     │            │
+                │          │   ┌─────────────┐ │   ┌─────────────┐  │                     │            │
+ ESP32 sensors ─┼──MQTT────┤   │ serial      │ │   │ input       │  │                     │            │
+ (HR, rower)    │          │   │ bridge      │ │   │ normaliser  │  │                     │            │
+                │          │   └──────┬──────┘ │   └──────┬──────┘  │                     │            │
+ Arduino Uno ───┼─ serial ─┼──────────┘        │          │         │                     │            │
+ (USB)          │          ▼                   ▼          ▼         ▼                     │            │
                 │   ═══════════════════ MQTT event bus (Mosquitto) ═══════════════════════╧══          │
                 │                                   │                                                  │
-                │                          ┌────────▼────────┐                                         │
-                │                          │ web API + UI    │  WebSocket ──▶ Chromium kiosk on display │
-                │                          │ (FastAPI)       │                                         │
+                │                          ┌────────▼────────┐  WebSocket ──▶ Chromium kiosk on display │
+                │                          │ web API + UI    │                                          │
+                │                          │ (FastAPI)       │  HTTPS ──────▶ companion UI (phone/laptop)│
                 │                          └─────────────────┘                                         │
                 │   USB mic / speaker (or USB conference speakerphone)                                 │
                 └──────────────────────────────────────────────────────────────────────────────────────┘
@@ -60,8 +61,16 @@ Key ideas:
   independent, lets us add sensors later without touching the engine, and makes
   it easy to test each piece in isolation (and to integrate with Home Assistant
   later if wanted).
-* **The display is a web page** shown in a full-screen Chromium kiosk. That
-  makes the UI easy to build/iterate and also viewable from a phone/laptop.
+* **The display is a web page** shown in a full-screen Chromium kiosk. The same
+  FastAPI app also serves a **companion UI** for phone/laptop – plan editing,
+  remote control and statistics – so there is one codebase, not two (§9).
+* **All inputs are equal.** Buttons, voice, web taps and sensors are normalised
+  into the same control intents before they reach the engine (§4). A new input
+  device is a new MQTT `node`, not an engine change.
+* **Sensors are optional and degradable.** Every activity can always be completed
+  by timer, button or voice if a sensor is missing (§5).
+* **Local-first.** A full workout runs with the internet down; backup, sync and
+  remote access are separate, optional concerns (§10).
 
 ## 3. Hardware allocation
 
@@ -351,8 +360,10 @@ speaker ◀───────────────────────
 e.g. right after it asked "How did it go?". Outside those windows the wake word
 is required to avoid false triggers from music/TV.
 
-Buttons on the ESP32 give a **fallback** for the most important commands when
-voice fails (noise, out of breath).
+Buttons are **not** merely a fallback for voice – they are an equal input path
+(§4). Voice shines for reporting and asking ("I did eight", "how long left?");
+buttons shine for anything you do while moving. Both produce the same control
+intents.
 
 ### 8.2 Language handling
 
@@ -375,38 +386,164 @@ voice fails (noise, out of breath).
 | `status` | "how long left?", "what's next?" | "hvor lang tid er der tilbage?", "hvad er det næste?" |
 | `feeling` | "easy", "good", "hard", "too hard" | "let", "fint", "hårdt", "for hårdt" |
 | `stop` | "stop workout" | "stop træningen" |
+| `rep` | "one", "rep" (mostly a button intent, §4.2) | "en", "rep" |
+| `undo_rep` | "undo", "scratch that" | "fortryd" |
+
+Every intent above is also reachable from a button or the companion UI where it
+makes sense, and every button press maps onto one of these intents – there is one
+vocabulary, not three.
 
 ## 9. Web UI: kiosk display and companion
 
-Big, high-contrast, readable from 3–4 m while sweating.
+The FastAPI service already serves the display; the cheapest big win is to let it
+serve a **second, management surface** for phone/laptop rather than building a
+separate system. **One codebase, one API, one WebSocket stream, two UI modes.**
 
-* **Idle / welcome**: clock, greeting, last session summary, "say *Hey Coach, start* to begin".
+| | Kiosk mode | Companion mode |
+|---|------------|----------------|
+| Device | Wall display / TV, Chromium kiosk | Phone, tablet, laptop |
+| Design | Huge type, glanceable at 3–4 m, no interaction required | Dense, interactive, thumb-friendly |
+| Purpose | Guide the session in progress | Manage plans, control remotely, review statistics |
+| Auth | None (it is the room) | Login required (§13) |
+
+### 9.1 Kiosk screens
+
+* **Idle / welcome**: clock, greeting, last session summary, current streak,
+  "press the green button or say *Hey Coach, start* to begin".
 * **Workout screen**:
-  * Large current activity name + big countdown / rep target / distance.
+  * Large current activity name + big countdown / rep counter / distance.
+    Exactly **one** number is dominant (§12.3); everything else is secondary.
   * Progress ring or bar for the current activity, round counter ("Round 3/5").
   * Side list of all activities in the plan with the current one highlighted and finished ones ticked.
   * "Up next" preview.
-  * Small indicator showing the microphone state (listening / heard: "næste").
-* **Summary screen**: total time, per-activity results, feeling scores.
+  * Live heart rate and zone when an HR sensor is connected (§5.1).
+  * Last-session comparison for the same activity ("last time: 18").
+  * Small status strip: microphone state, connected input nodes, sensor status,
+    and any degraded mode (§12.6).
+* **Summary screen**: total time, per-activity results, feeling scores, personal
+  bests hit, one highlighted positive takeaway (§12.4).
 * **History screen**: calendar/list of sessions; say "show history / vis historik".
 
+### 9.2 Plan editor
+
+Create and edit plans in the browser instead of hand-editing YAML:
+
+* **YAML stays the storage format** so plans remain diffable and reviewable in
+  git. The editor reads and writes those files; it is a view over the files, not
+  a second source of truth.
+* Plan library with search, duplication and versioning (via git history).
+* Templates for the common shapes: EMOM, AMRAP, Tabata, circuit, intervals.
+* Validation against the schema (§7.2) with a dry-run preview of the timeline
+  and the total session duration.
+
+### 9.3 Live remote control
+
+From the phone: start a plan, pause, skip, adjust, record feeling. This doubles
+as a **wireless button** when you are away from the wall panel – it publishes the
+same control intents as a physical node, with `node: phone` (§3.1, §4.1).
+
+### 9.4 Statistics and completion views
+
+* **Streaks** and a calendar heat-map of sessions.
+* **Per-exercise progression** – reps / weight / pace over time, with personal
+  bests marked.
+* **Completion rate per plan** – e.g. "you skip the finisher 60 % of the time"
+  → suggest shortening it. Completion is tracked per activity, so skipped,
+  stopped and adjusted sets are all visible.
+* **Session detail** – timeline of the actual session against the plan, HR
+  trace, feeling scores, inputs used.
+* **Volume and time totals** by week and month, with simple trend lines. The aim
+  is a handful of charts you actually look at, not an analytics suite.
+
+### 9.5 Post-session review
+
+Immediately after a session the companion UI offers a short review page (notes,
+feeling score, "how was that?"). Asking afterwards, while it is still fresh,
+gives far better data quality than asking mid-workout when you are gasping.
+
+### 9.6 Export
+
+* CSV / JSON export of sessions and activity logs.
+* Optionally write sessions as `.fit` or `.tcx` so they can be uploaded to
+  Strava/Garmin if that is ever wanted. Export is a manual, explicit action.
+
 Tech: plain HTML/CSS + a small JS framework (e.g. Svelte or vanilla), live
-updates over WebSocket from the API service.
+updates over WebSocket from the API service. Both modes share components and
+differ mainly in layout and type scale.
 
 ## 10. Data, history and sync (G3)
 
-SQLite database on the Pi (backed up nightly to another machine/USB stick):
+### 10.1 Schema
+
+SQLite database on the Pi is the **single source of truth**:
 
 ```
-session(id, plan_name, started_at, ended_at, status, notes)
-activity_log(id, session_id, block, round, exercise, type,
+user(id, name, language, hr_max, created_at)
+session(id, user_id, plan_name, started_at, ended_at, status, notes)
+activity_log(id, session_id, block, round, exercise, type, count_mode,
              target_reps, actual_reps, target_seconds, actual_seconds,
-             target_meters, actual_meters, feeling, started_at, ended_at)
-event_log(id, session_id, ts, source, kind, payload_json)   -- raw events for debugging/analysis
+             target_meters, actual_meters, feeling,
+             avg_hr, max_hr, started_at, ended_at)
+sample(id, session_id, ts, metric, value)      -- HR/pace/cadence time series
+event_log(id, session_id, ts, source, node, kind, payload_json)  -- raw events for debugging
 ```
+
+**Decision – carry `user_id` from day one.** Multi-user remains a non-goal, but
+`user_id` is the one schema change that is cheap now and painful later (it is
+also exactly what an online datastore or a family member would force). A single
+row in `user` is created at install time and everything references it.
 
 Plans and the exercise library live as YAML files in this repository; history
 lives only in the database (it is personal data, not source code).
+
+### 10.2 Local-first, by decision
+
+The workout must run with the internet down (G5). Therefore:
+
+* The engine, UI, voice and storage have **no** network dependency outside the
+  LAN during a session.
+* Nothing below may become a prerequisite for starting or finishing a workout.
+
+### 10.3 Backup
+
+A nightly **encrypted backup** of the SQLite file to a NAS, a second Pi or object
+storage. This is the 90 % solution for "don't lose my history" and is far simpler
+and more robust than real synchronisation. Restores are tested periodically –
+an untested backup is not a backup.
+
+### 10.4 Optional outbound sync
+
+An optional, **fully disableable** sync service that pushes *completed sessions*
+to a remote store so history can be viewed away from home (and later from a
+phone app):
+
+* **One-way and append-only** – the hub pushes, nothing is ever pulled back into
+  the live system.
+* **Completed sessions only** – never live state, never mid-session data.
+* **Retry on failure** with a local queue; failures are invisible to the workout.
+* Off by default.
+
+### 10.5 Privacy boundary
+
+If a hosted datastore is ever used, the boundary is decided now:
+
+| Data | Leaves the house? |
+|------|-------------------|
+| `session`, `activity_log` | Yes, if sync is enabled |
+| `sample` (HR traces) | Yes, if sync is enabled – this is health data; encrypted at rest and in transit |
+| `event_log` (raw events) | **No** – debugging data, stays local |
+| Audio / recordings / transcripts | **Never** – they do not leave the device, and audio is not persisted at all |
+
+Training and heart-rate data are health data. They are treated as sensitive by
+default: encrypted backups, no third-party analytics, no sharing without an
+explicit action by the user.
+
+### 10.6 Remote access without a cloud datastore
+
+For "see my stats while away", a VPN (Tailscale / WireGuard) to reach the hub's
+own web UI is simpler, more private and more capable than replicating data to a
+hosted service. **Recommendation: do this first**; it very likely removes the
+need for an online datastore entirely.
 
 ## 11. Event bus topics (MQTT)
 
@@ -415,15 +552,148 @@ lives only in the database (it is personal data, not source code).
 | `tc/presence/motion` | ESP32 presence node | `{"motion": true}` |
 | `tc/presence/ble` | ESP32 presence node | `{"id": "my-phone", "rssi": -62}` |
 | `tc/presence/state` | presence service | `{"state": "arrived", "user": "me"}` |
-| `tc/input/button` | ESP32 button node / serial bridge | `{"button": "next"}` |
+| `tc/input/button` | ESP32 button node / serial bridge | `{"node": "wall-1", "button": "rep", "action": "press", "ts": 1733053200.123}` |
+| `tc/input/intent` | input normaliser | `{"intent": "rep", "value": 1, "source": "button", "node": "wall-1", "ts": ...}` |
+| `tc/node/status` | every input/sensor node (LWT, retained) | `{"node": "wall-1", "online": true, "rssi": -58, "battery": 92}` |
+| `tc/node/feedback` | engine / UI | `{"node": "wall-1", "led": "pulse_green", "buzz": "click"}` |
 | `tc/sensor/rower` | optional sensor | `{"meters": 812, "spm": 24}` |
+| `tc/sensor/hr` | HR bridge | `{"bpm": 142, "zone": 3, "rr": [412, 418]}` |
+| `tc/sensor/ambient` | optional sensor | `{"temp_c": 21.4, "humidity": 48}` |
 | `tc/voice/intent` | voice service | `{"intent": "report_reps", "value": 8, "lang": "da", "text": "otte"}` |
 | `tc/voice/say` | engine / presence | `{"text": "Næste øvelse: armstrækninger", "lang": "da", "priority": "high"}` |
 | `tc/engine/state` | workout engine | full current state snapshot (retained) |
 | `tc/engine/event` | workout engine | `{"event": "countdown", "seconds_left": 3}` |
 
+`action` is one of `press`, `long`, `double` (§4.2). `node` identifies *which*
+panel sent it (§3.1), so a new button is a new `node` id and nothing else.
+
+Every node publishes a retained **last-will status** on `tc/node/status`, which is
+what lets the UI show which inputs and sensors are actually alive (§12.6).
+
 The broker is only reachable on the local network and uses username/password
-authentication.
+authentication (§13).
+
+## 12. Experience principles
+
+These are the things that decide whether the system feels great or merely works.
+They are design constraints, not polish to be added later.
+
+### 12.1 Responsiveness
+
+* Button feedback < 100 ms, locally generated (§4.3).
+* **Pre-generate and cache TTS** for all static cues – numbers, "halfway",
+  "10 seconds", "3‑2‑1", every exercise name in both languages. Cues then play
+  instantly and sound identical every time. Live synthesis is reserved for
+  dynamic sentences (greetings, summaries, answers).
+* Latency budget per cue type:
+
+| Cue | Budget | How |
+|-----|--------|-----|
+| Button click / LED | < 100 ms | Local on the node |
+| Screen update after an input | < 200 ms | WebSocket push |
+| Cached audio cue (countdown, next exercise) | < 150 ms | Pre-rendered WAV |
+| Synthesised sentence | < 1.5 s | Piper, started as soon as the text is known |
+
+Timing-critical cues (3‑2‑1, interval start) are **scheduled ahead of time**, not
+triggered on the tick, so they land on the beat.
+
+### 12.2 Audio design, not just speech
+
+* Distinct, musical **earcons** for: round start, final 3‑2‑1, activity
+  complete, session complete, personal best, error/degraded. A sound you
+  recognise without listening beats a sentence you must parse while gasping.
+* **Music ducking** – lower any music playing through the same output while a
+  cue plays, then restore it.
+* A **"sounds only" mode** – earcons without speech, for when you have heard the
+  same plan a hundred times, and a **"silent" mode** for late evenings.
+* Speech is never the only channel for something important; the screen and the
+  LED always carry it too.
+
+### 12.3 Glanceability
+
+* From across the room you should be able to read exactly **one** thing: time or
+  reps remaining. Everything else is deliberately secondary in size and contrast.
+* The **LED ring is a peripheral-vision progress indicator**: colour-coded work
+  (green) / rest (blue) / final seconds (amber pulse) / complete (white flash).
+  Done well, you can run a whole interval set without looking at the screen.
+* No information that requires reading a sentence while moving.
+
+### 12.4 Motivation
+
+Genuine, not gamified noise:
+
+* Last-session comparison inline on the workout screen ("last time: 18").
+* Personal-best celebration – a distinct earcon and a brief screen treatment.
+* Streak shown on the idle screen.
+* End-of-session summary that highlights **one** concrete positive thing.
+
+### 12.5 Adaptivity
+
+* Propose the next session from history (plan rotation, recovery, what you have
+  been avoiding).
+* Progressive-overload suggestions per exercise, based on the logged trend.
+* Auto-scale down when the last session for that plan was reported "too hard";
+  scale up after repeated "easy".
+* Deload hint after N consecutive hard sessions.
+
+All suggestions are proposals shown before the session starts – the system never
+silently changes a plan.
+
+### 12.6 Graceful failure
+
+Every failure mode has a defined behaviour and a visible reason. §7.3 already
+persists state for resume; this extends it to a visible **degraded mode**
+indicator so you always know *why* something is not answering.
+
+| Failure | Behaviour |
+|---------|-----------|
+| Microphone unavailable / STT failing | Voice indicator turns grey with a reason; buttons and timers continue; no attempt to listen |
+| MQTT broker down | Hub keeps running the session from local state; inputs that depend on the bus are marked offline; broker reconnect is automatic |
+| Button node offline (missed LWT heartbeat) | Node greyed out in the status strip; other nodes and voice still work; `count_mode` falls back to `voice` |
+| Sensor offline mid-activity | Fall back to the time/button goal for that activity (§5), log the gap, show the degraded badge |
+| Display asleep or HDMI lost | Audio cues continue uninterrupted; display is re-woken on the next presence or input event |
+| Power cut mid-session | On boot, offer "resume your session from 12 minutes ago?" from the persisted state |
+| Audio output missing | Screen and LED carry all cues; a one-line warning on the idle screen |
+
+### 12.7 Low friction
+
+* **Quick start**: one long press of Start at the door launches your usual plan –
+  no menus, no list, no selection. The best training experience is the one with
+  the least friction before the first rep.
+* Presence-triggered wake-up means the system is already on the right screen when
+  you walk in (§6).
+* Warm-up and cool-down are part of the plan model, not something to remember,
+  and the system knows the difference so stats are not polluted by warm-ups.
+
+### 12.8 Accessibility and practicality
+
+* **Sweaty hands**: large physical buttons and large on-screen hit areas; no
+  gesture or precision-touch requirement anywhere.
+* **Bright room**: high contrast, large type, no thin fonts, no pastel on white.
+* **One-press emergency stop**: hold Done for 3 s ends everything immediately
+  (§4.2). Always available, in every state.
+* Audio and visual channels are redundant, so the system is usable with the
+  sound off or without looking at the screen.
+
+## 13. Security and privacy
+
+The core loop is LAN-only, but the companion UI (§9) leaves the kiosk, so this
+needs stating explicitly.
+
+| Surface | Protection |
+|---------|-----------|
+| MQTT broker | LAN-only bind, username/password per client, no anonymous access; nodes use per-node credentials so one can be revoked |
+| Web API + UI (kiosk) | Reachable on the LAN; kiosk mode on the local display needs no login |
+| Web API + UI (companion) | Login required – single user, hashed password, long-lived session cookie, CSRF protection on state-changing requests |
+| Transport | HTTPS on the LAN with a locally issued certificate; never plain HTTP for the companion UI |
+| Remote access | **VPN only** (Tailscale / WireGuard). No port forwarding, no exposing the hub to the internet |
+| Backups | Encrypted at rest (§10.3) |
+| Audio | Never persisted; transcripts are discarded after intent parsing |
+| Health data | Sensitive by default (§10.5); no third-party analytics; sync is off by default and opt-in |
+
+Secrets (broker passwords, Wi‑Fi credentials, sync tokens) live in a local
+config file or environment, **never in this repository**. Firmware reads its
+credentials from a provisioning step, not from committed source.
 
 ## 14. Proposed repository layout
 
@@ -432,17 +702,26 @@ TrainingCenter/
 ├── docs/                 design notes, wiring diagrams, photos
 ├── hub/                  Python services running on the Raspberry Pi
 │   ├── engine/           workout model + state machine (pure Python, unit tested)
-│   ├── voice/            wake word, STT, intent parser, TTS
+│   ├── input/            input normaliser: buttons/voice/UI/sensors → control intents
+│   ├── voice/            wake word, STT, intent parser, TTS (+ cue cache)
 │   ├── presence/         presence fusion logic
+│   ├── sensors/          HR bridge, rower, ambient, equipment integrations
 │   ├── serial_bridge/    Arduino serial ⇄ MQTT bridge
-│   ├── api/              FastAPI + WebSocket server
-│   ├── storage/          SQLite access
+│   ├── api/              FastAPI + WebSocket server (kiosk + companion)
+│   ├── storage/          SQLite access, migrations
+│   ├── sync/             backup + optional outbound sync (§10.3, §10.4)
 │   └── tests/
-├── ui/                   web UI for the kiosk display
+├── ui/
+│   ├── kiosk/            glanceable display UI
+│   ├── companion/        phone/laptop UI: plans, control, statistics
+│   └── shared/           components, API client, WebSocket client
 ├── firmware/
 │   ├── esp32-presence/   BLE scan + mmWave → MQTT
-│   ├── esp32-buttons/    buttons + LED ring → MQTT
+│   ├── esp32-buttons/    buttons + LED ring + buzzer → MQTT (one build, many nodes)
+│   ├── esp32-hr/         BLE heart-rate bridge → MQTT
 │   └── arduino-io/       serial I/O bridge
+├── assets/
+│   └── audio/            pre-rendered TTS cues and earcons (§12.1, §12.2)
 ├── plans/                workout plans (YAML) + exercises.yaml
 └── deploy/               systemd units, docker-compose, kiosk setup scripts
 ```
@@ -453,21 +732,38 @@ openWakeWord on a Pi), **Arduino/C++ (PlatformIO)** or ESPHome for the ESP32s,
 
 ## 15. Roadmap (incremental, each step usable on its own)
 
+Buttons move **early** – they make the MVP genuinely usable without any voice
+stack at all. Heart rate moves into the mid-game. Web statistics follow once
+there is history worth looking at.
+
 1. **MVP – interval timer on the display**: engine with `timed` and `rest`
-   activities, YAML plans, web UI in kiosk mode, TTS cues via Piper (no voice
-   input yet), start via keyboard/button. History saved to SQLite.
-2. **Voice commands**: wake word + faster-whisper + intent parser for
-   start/pause/next/done in Danish and English.
-3. **Reps & hybrid sets**: `reps` and `reps_in_time` activities with "how did it
-   go?" dialogue and adaptive "do the last 2" follow-ups.
-4. **Presence & greeting**: ESP32 with mmWave + BLE scan, greeting on arrival,
-   display sleep on leave.
-5. **Distance activities & check-ins**: `distance` type with timed check-ins;
-   optional rower sensor (hall/reed sensor via Arduino, or reading the rowing
-   monitor over Bluetooth if supported).
-6. **History & stats screens**, progress trends, simple suggestions for next workout.
-7. Nice-to-haves: heart-rate strap over BLE, music ducking during voice cues,
-   Home Assistant integration (lights on arrival), plan editor in the UI.
+   activities, YAML plans, kiosk UI, cached TTS cues + earcons via Piper (no
+   voice input yet), start via keyboard. History saved to SQLite.
+2. **Buttons & the input model**: ESP32 control panel (Rep/Lap, Start/Pause,
+   Next, Previous, Done) with LED ring and buzzer, the unified intent path
+   (§4.1), press semantics (§4.2) and the <100 ms feedback budget (§4.3). After
+   this step the system is fully usable hands-on, with no voice at all.
+3. **Reps & hybrid sets**: `reps` and `reps_in_time` activities with
+   `count_mode: manual_button`, live rep counter, undo, and the "how did it go?"
+   dialogue for the modes that still need it.
+4. **Voice commands**: wake word + faster-whisper + intent parser for
+   start/pause/next/done in Danish and English, feeding the same intent path.
+5. **Presence & greeting**: ESP32 with mmWave + BLE scan, greeting on arrival,
+   quick-start, display sleep on leave.
+6. **Heart rate**: BLE HRM, live zone on the kiosk screen, `until_hr_below`
+   rests, HR stored as samples for the stats screens.
+7. **Distance activities & check-ins**: `distance` type with timed check-ins;
+   rower sensor (hall/reed sensor via Arduino, or reading the rowing monitor
+   over Bluetooth if supported).
+8. **Companion UI & statistics**: login, remote control, history, streaks,
+   per-exercise progression, completion rates, post-session review, export.
+9. **Plan editor** in the companion UI, with templates and validation.
+10. **Backup & optional sync**: encrypted nightly backup, then VPN remote access;
+    outbound sync only if remote access proves insufficient.
+11. **Adaptivity**: progressive-overload suggestions, auto-scaling from feeling
+    scores, deload hints.
+12. Nice-to-haves: extra sensors from Tier 2 (§5.2), music ducking refinements,
+    Home Assistant integration (lights on arrival), satellite button nodes.
 
 ## 16. Open questions
 
@@ -484,3 +780,20 @@ openWakeWord on a Pi), **Arduino/C++ (PlatformIO)** or ESPHome for the ESP32s,
 8. Is it OK for the system to be fully offline (no cloud), or are cloud speech
    services acceptable as a fallback for better Danish recognition?
 9. Should music be playing from the same speaker (then we need audio ducking)?
+10. **Per-rep or per-set counting?** Do you want to press a button for *every*
+    rep (precise, but busy during fast sets), or once per set/round? This
+    decides whether the Rep button is the primary interaction or an occasional
+    one, and whether a fast 20-rep set should fall back to `voice`.
+11. **How many input nodes, and where?** One wall panel, or also a satellite by
+    the rower and a foot button? Is the display a touch screen (§3.1)?
+12. **Which equipment already has BLE?** Rower monitor, bike, heart-rate strap,
+    scale. Reading an existing monitor is far cheaper than building a sensor.
+13. **Do you want remote access at all** – checking stats from work/holiday – or
+    is LAN-only sufficient? If yes, is a VPN (§10.6) acceptable, or do you
+    specifically want a hosted datastore?
+14. **Single user forever?** `user_id` is in the schema either way (§10.1), but
+    knowing whether family members will use it affects the UI and the greeting
+    logic.
+15. **How much motivation layer do you want?** Streaks and PB celebrations, or a
+    deliberately plain system?
+16. Is a "sounds only"/silent mode needed (early mornings, late evenings)?
