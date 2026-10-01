@@ -150,6 +150,10 @@ in firmware; the hub only ever sees clean events.
 | **Done / Confirm** | Complete the current activity, or confirm a feedback prompt | – | – |
 | **Hard / Easy** (optional pair) | Record `feeling` without speaking | – | – |
 
+**Hold (≥3 s)** is defined only on Done and on Rep/Lap, where it is the
+emergency stop (§12.8). On every other button a hold is **ignored** – it is not
+a second long press – so leaning on the panel cannot do anything.
+
 A third gesture, **hold (≥3 s)**, is reserved for stopping the session
 (§12.8): on Done, and on Rep/Lap for single-button nodes that have no Done
 button. Because a hold necessarily passes through the `long` threshold, the
@@ -310,7 +314,7 @@ blocks:
     rounds: 1
     goal: { type: amrap, time_cap: 8min }     # block-level goal, §7.4
     activities:
-      - { type: reps, exercise: kettlebell_swings, reps: 15, weight: 16kg }
+      - { type: reps, exercise: kettlebell_swings, reps: 15, weight: 16kg }  # loaded, so it feeds progression too (§7.3)
       - { type: reps, exercise: push_ups, reps: 10 }
   - name: Cool-down
     rounds: 1
@@ -544,8 +548,8 @@ derived, not guessed:
 | Status | Meaning |
 |--------|---------|
 | `completed` | The goal was reached: the timer ran out, or ≥ 100 % of the target reps/distance were recorded |
-| `partial` | Started, and ≥ 50 % of the target recorded, but the goal was not reached (e.g. 6 of 10 reps before `next`) |
-| `skipped` | Started but < 50 % recorded, or skipped outright with `next` |
+| `partial` | Started, and at least the configured partial threshold (default 50 %) of the target recorded, but the goal was not reached (e.g. 6 of 10 reps before `next`) |
+| `skipped` | Started but below the partial threshold, or skipped outright with `next` |
 | `not_reached` | The session ended before this activity was reached at all – **not** the same as skipping it |
 | `trimmed` | Removed up front by the time budget (§7.7) – excluded from completion statistics entirely |
 
@@ -559,7 +563,8 @@ Two cases do not come from counting:
   including one cut short with `next`. Rests are not work, and counting them as
   failures would make the completion rate meaningless.
 
-The 50 % boundary between `partial` and `skipped` is a **configurable setting**,
+The **partial threshold** – the boundary between `partial` and `skipped`,
+default 50 % – is a **configurable setting**,
 not a constant: it is the point at which "I did some of it" stops being a fair
 description. It is set once, globally, and changing it recomputes the derived
 statistics rather than rewriting the logged counts, which are the facts.
@@ -1059,7 +1064,7 @@ indicator so you always know *why* something is not answering.
 | Failure | Behaviour |
 |---------|-----------|
 | Microphone unavailable / STT failing | Voice indicator turns grey with a reason; buttons and timers continue; no attempt to listen |
-| MQTT broker down | The kiosk keeps updating, because the engine pushes state to it over the WebSocket (§9), not over the bus – so the banner and the countdown are both still visible. The session keeps running **on timers only** – every input reaches the engine over the bus, so remote nodes, voice and the UI all stop producing intents. The kiosk shows a prominent "inputs offline" banner, `timed`/`rest` activities continue uninterrupted, and `reps` activities hold at their current count rather than being lost. Reconnect is automatic; see the replay rule below. |
+| MQTT broker down | The kiosk keeps *displaying*, because the engine pushes state to it over the WebSocket (§9), not over the bus – so the banner and the countdown are both still visible. Kiosk and companion **taps stop working**, because they reach the engine via `tc/input/ui` (§11) like every other input. The session keeps running **on timers only** – every input reaches the engine over the bus, so remote nodes, voice and the UI all stop producing intents. The kiosk shows a prominent "inputs offline" banner, `timed`/`rest` activities continue uninterrupted, and `reps` activities hold at their current count rather than being lost. Reconnect is automatic; see the replay rule below. |
 | Button node offline (LWT received, or keepalive timeout) | Node greyed out in the status strip; other nodes and voice still work. `count_mode` falls back to `voice` **only when no physical button node remains online** (§5.4) |
 | Sensor offline mid-activity | Fall back to the time/button goal for that activity (§5), log the gap, show the degraded badge |
 | Display asleep or HDMI lost | Audio cues continue uninterrupted; display is re-woken on the next presence or input event |
