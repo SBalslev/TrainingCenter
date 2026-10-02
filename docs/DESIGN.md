@@ -74,6 +74,44 @@ Key ideas:
 
 ## 3. Hardware allocation
 
+§2 shows the *software* services. This section shows the **physical devices**:
+what boxes exist, what hangs off each one, and which link carries what. Node ids
+(`panel`, `floor`, …) are the same ones used everywhere else (§3.1, §11).
+
+```
+  BLE – worn, or already on the equipment (battery powered)
+  HR strap, rower monitor                                            phone or BLE key-fob
+           │ BLE                                                               │ BLE advert
+           ▼                                                                   ▼
+
+  Wi-Fi nodes – ESP32, mounted in the room, USB-C mains power (MQTT §11)
+   ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+   │ "hr-bridge"  │ │ "panel"      │ │ "wall-rower" │ │ "floor"      │ │ "presence"   │
+   │ BLE central  │ │ 5 buttons,   │ │ 2 buttons    │ │ 1 foot       │ │ mmWave radar │
+   │ for the HRM  │ │ LED ring,    │ │ + LED        │ │ button       │ │ + BLE scan   │
+   │              │ │ buzzer       │ │              │ │              │ │              │
+   └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
+           │                │                │                │                │
+           └────────────────┴────────────────┴────────────────┴────────────────┘
+                                             ▼  Wi-Fi / MQTT
+   ┌──────────────────────────────────────────────────────────────────────────────────┐
+   │                  Raspberry Pi 5 (8 GB) — the hub, mains powered                  │
+   │            engine · voice · web API · SQLite · Mosquitto broker (§2)             │
+   └────────┬──────────────┬─────────────┬──────────────┬────────────────────┬────────┘
+          HDMI            USB           USB            USB                  LAN
+            ▼              ▼             ▼              ▼                    ▼
+      TV or monitor  USB speaker-   SSD or USB     Arduino Uno            router
+       (the kiosk,   phone: mic +   boot drive     (optional):            ├ phone + laptop
+          §9.1)      speaker, echo    (§10.9)   reed/hall sensor,         │  (companion §9)
+                     cancellation                 extra buttons           └ Home Assistant
+                                                                             (optional §12.10)
+```
+
+Four link types, and that is deliberate: **BLE** for anything worn or
+battery-powered, **Wi-Fi + MQTT** for anything mounted on a wall with power,
+**USB** for everything within a cable's reach of the hub, and **HDMI** for the
+one display. Nothing in the room needs an internet connection (§10.2).
+
 | Device | Role | Hardware attached |
 |--------|------|-------------------|
 | Raspberry Pi 5 (or Pi 4) | Hub: engine, voice, UI, storage, MQTT broker | HDMI display/TV, USB speakerphone (mic + speaker with echo cancellation) or USB mic + powered speakers |
@@ -81,6 +119,7 @@ Key ideas:
 | ESP32 #2 | **Main control panel** – hands-on controls | Big arcade buttons (Rep/Lap, Start/Pause, Next, Previous, Done), WS2812 LED ring, piezo buzzer |
 | ESP32 #3 (optional) | **Satellite control node** near the rower/mat | 1–2 arcade buttons + LED, same firmware, different `node` id |
 | ESP32 #4 (optional) | Heart-rate bridge | BLE central reading a standard HRM strap → MQTT |
+| ESP32 #5 (optional) | **Foot button node** on the floor | One large foot-operated button, same firmware, `node: floor` |
 | Arduino Uno (optional) | Extra I/O via USB serial to the Pi | Buttons, buzzer, reed switch / hall sensor (e.g. count rowing strokes or bike revolutions) |
 | Spare Raspberry Pi (optional) | Second display / dev box / heavier speech model host | – |
 
@@ -101,6 +140,55 @@ configuration, not code:
 A USB **speakerphone** is strongly recommended: it gives far-field pickup and
 acoustic echo cancellation, which matters because the system talks while it
 listens, and the room will have music and heavy breathing.
+
+### 3.2 Peripherals and what each one buys you
+
+| Peripheral | Attached to | Needed for | Required? |
+|------------|-------------|------------|-----------|
+| TV or monitor + HDMI | Hub | The kiosk display (§9.1) – the main output | **Yes** |
+| USB speakerphone (mic + speaker, AEC) | Hub | Voice input and all audio cues (§8, §12.2) | **Yes** for voice; a plain speaker alone still gives cues |
+| Arcade buttons + LED ring + buzzer | ESP32 `panel` | Hands-on control and sub-100 ms feedback (§4.2, §4.3) | **Yes** – buttons are a first-class input (G6) |
+| mmWave radar (e.g. HLK‑LD2410) or PIR | ESP32 `presence` | Waking the display and the greeting (§6) | No – a button press does the same thing |
+| BLE heart-rate strap | ESP32 HR bridge, or the Pi's own BLE | Live zones, `until_hr_below` rests (§5.1), readiness via `rr` (§12.9) | No, but the highest-value optional sensor |
+| Reed / hall sensor | Arduino Uno | Counting rowing strokes or bike revolutions (§5.2) | No – `manual_button` or `voice` covers it |
+| Rower / bike monitor with BLE (PM5, FTMS) | ESP32 or the Pi | Real distance, watts and cadence without building a sensor | No – but far cheaper than a DIY sensor if you already own it |
+| USB SSD or industrial SD card | Hub | Surviving continuous event logging (§10.9) | Strongly recommended |
+| Heatsink or small fan | Hub | Thermal headroom for Whisper in a hot garage (§15.3) | Strongly recommended |
+| Touch screen | Hub (instead of a TV) | On-screen controls as the `kiosk` node (§3.1) | No – and it never counts as a physical button node (§5.4) |
+| Smart lights / fan via Home Assistant | The house, not the hub | Room-scale work/rest signalling and cooling (§12.10) | No |
+
+Every "No" in that column is the same design rule restated: **a missing
+peripheral degrades the experience, never the ability to finish the session**
+(§5, §12.6).
+
+### 3.3 Staged build
+
+Nothing here has to be bought at once, and each stage is independently usable –
+the roadmap (§20) is ordered to match.
+
+| Stage | Devices | What you get |
+|-------|---------|--------------|
+| **1. Minimum viable** | Pi 5, TV, USB speakerphone, keyboard | A talking interval timer with history and the full web UI. No ESP32 at all |
+| **2. Hands-on** | + ESP32 `panel` with buttons, LED ring, buzzer | The real experience: rep counting, start/pause/next without speaking |
+| **3. Aware** | + ESP32 presence node, BLE HR strap | Greeting on arrival, live zones, recovery-based rests |
+| **4. Covered** | + `wall-rower` and `floor` nodes, Arduino + reed sensor | A button within reach wherever you are; automatic stroke counting |
+| **5. Ambient** | + Home Assistant lights and fan | The room itself signals work and rest (§12.10) |
+
+Practical notes on placement and power:
+
+* **Every ESP32 needs mains power.** Battery-powered button nodes sound
+  attractive and are not: a node that sleeps cannot respond in under 100 ms
+  (§4.3), and a flat battery mid-session is worse than a cable. Plan a USB-C
+  socket wherever a node goes.
+* **Wi-Fi is 2.4 GHz** for the ESP32s. Check coverage at the far corner of the
+  room *before* mounting anything; a garage wall is not kind to 2.4 GHz.
+* **Mount the panel at hand height next to the display**, not below it – you
+  will be pressing it while standing, sweaty, and not looking.
+* **The microphone wants to be near you, the speaker near the display.** A
+  single speakerphone is the pragmatic compromise, and echo cancellation is what
+  makes it work at all while the system is talking.
+* **The display at eye height, readable from the floor.** Most of a session is
+  spent looking up at it from a mat or down at it from a rack (§12.3).
 
 ## 4. Input model
 
